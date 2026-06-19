@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+bin/
+poma-mcp
+*.exe
+*.test
+*.out
+
+# IDE / editor
+.vscode
+.idea
+.cursor
+.claude
+
+# Env / secrets
+.env
+.env.*
+*.local
+
+# Docs (not needed at runtime)
+*.md
+!README.md
+
+# CI
+.github
+
+# Misc
+.DS_Store
+*/.DS_Store

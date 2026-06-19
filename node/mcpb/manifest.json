@@ -1,0 +1,55 @@
+{
+  "manifest_version": "0.3",
+  "name": "poma-grill-mcp",
+  "display_name": "POMA Grill",
+  "version": "0.3.0",
+  "description": "MCP server for the POMA Grill context engine API",
+  "long_description": "Ingest documents and run semantic search against the POMA Grill context engine directly from your desktop MCP host. Provides ingest (and variants), job status, search, and explain tools for RAG workflows.",
+  "author": {
+    "name": "POMA AI",
+    "url": "https://github.com/poma-ai/poma-grill-mcp"
+  },
+  "homepage": "https://github.com/poma-ai/poma-grill-mcp",
+  "documentation": "https://github.com/poma-ai/poma-grill-mcp/blob/main/node/README.md",
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/poma-ai/poma-grill-mcp.git"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js", "-input", "-"],
+      "env": {
+        "POMA_API_KEY": "${user_config.api_key}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "grill_ingest", "description": "Ingest a document into the context engine" },
+    { "name": "grill_ingest_sync", "description": "Ingest a document and wait for completion" },
+    { "name": "grill_ingest_resume", "description": "Resume a previously interrupted ingest" },
+    { "name": "grill_ingest_batch", "description": "Ingest multiple documents in one call" },
+    { "name": "grill_jobs_status", "description": "Check the status of ingest jobs" },
+    { "name": "grill_search", "description": "Semantic search over ingested documents" },
+    { "name": "grill_explain", "description": "Explain search results / context retrieval" },
+    { "name": "grill_docs_list", "description": "List documents ingested for the authenticated namespace" }
+  ],
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "POMA API Key",
+      "description": "Your POMA Grill Project or Account key. Stored securely by host.",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=20"
+    }
+  }
+}

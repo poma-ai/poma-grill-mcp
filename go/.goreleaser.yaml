@@ -1,0 +1,87 @@
+# GoReleaser — https://goreleaser.com
+#
+# Homebrew tap (poma-ai/homebrew-poma):
+#   - PAT with repo scope: HOMEBREW_TAP_GITHUB_TOKEN (see .github/workflows/release.yaml)
+#   - Tag and run: goreleaser release --clean
+#
+# Uses `brews` (Formula under Formula/) so `brew install poma` works without --cask.
+# GoReleaser deprecates this in favor of homebrew_casks for prebuilt binaries; expect a
+# deprecation warning until v3. One-time: remove Casks/poma.rb from the tap if migrating.
+
+version: 2
+
+release:
+  replace_existing_artifacts: true
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: poma-grill-mcp
+    main: .
+    binary: poma-grill-mcp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  algorithm: sha256
+
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - Merge pull request
+      - Merge branch
+
+brews:
+  - name: poma-grill-mcp
+    homepage: https://github.com/poma-ai/poma-grill-mcp
+    description: MCP server for the POMA AI Grill API
+    caveats: |
+      You need a JWT: export POMA_API_KEY or use --token / --json.
+    post_install: |
+      if OS.mac?
+        system "/usr/bin/xattr", "-dr", "com.apple.quarantine", "#{bin}/poma-grill-mcp"
+      end
+    test: |
+      system "#{bin}/poma-grill-mcp", "--help"
+    repository:
+      owner: poma-ai
+      name: homebrew-poma-grill-mcp
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_msg_template: "brew: update {{ .ProjectName }} formula to {{ .Tag }}"
+    directory: Formula

@@ -1,0 +1,292 @@
+{
+  "$comment": "Single source of truth for POMA Grill MCP tool definitions. Consumed directly by the Node implementation; the Go implementation (go/tools/grill.go) currently maintains hand-written copies that must be kept in sync until codegen lands. See PLAN.md.",
+  "tools": [
+    {
+      "name": "grill_explain",
+      "description": "Returns a structured explanation of how POMA Grill works: ingesting data, searching, result format, and how to get an API key. No arguments or authentication required.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "explanation": {
+            "type": "string",
+            "description": "Markdown-formatted explanation of POMA Grill."
+          }
+        }
+      }
+    },
+    {
+      "name": "grill_ingest",
+      "description": "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file_base64": {
+            "type": "string",
+            "description": "Standard base64 of the file bytes. Use for small files. Mutually exclusive with file_path."
+          },
+          "file_path": {
+            "type": "string",
+            "description": "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES."
+          },
+          "filename": {
+            "type": "string",
+            "description": "Original basename (e.g. report.pdf). Optional; inferred from file_path or content when possible."
+          },
+          "token": {
+            "type": "string",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "job_id": { "type": "string" },
+          "events": { "type": "array" },
+          "error":  { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "grill_ingest_sync",
+      "description": "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file_base64": {
+            "type": "string",
+            "description": "Standard base64 of the file bytes. Use for small files. Mutually exclusive with file_path."
+          },
+          "file_path": {
+            "type": "string",
+            "description": "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES."
+          },
+          "filename": {
+            "type": "string",
+            "description": "Original basename (e.g. report.pdf). Optional; inferred from file_path or content when possible."
+          },
+          "token": {
+            "type": "string",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "job_id": { "type": "string" },
+          "events": { "type": "array" },
+          "error":  { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "grill_ingest_resume",
+      "description": "Resume tracking an in-progress POMA Grill ingestion job. Connects to the status SSE stream for the given job_id and waits until a terminal state (done, failed, grilled, deleted), emitting progress notifications. Use when grill_ingest was called earlier and you need to wait for completion.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "Job ID returned by a previous grill_ingest call."
+          },
+          "token": {
+            "type": "string",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+          }
+        },
+        "required": ["job_id"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "job_id": { "type": "string" },
+          "events": { "type": "array" },
+          "error":  { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "grill_ingest_batch",
+      "description": "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing. Use grill_jobs_status to monitor progress. On free-tier accounts use concurrency:1; the API returns 403 when the job queue is full — quota_exceed results can be retried once running jobs finish.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file_paths": {
+            "type": "array",
+            "description": "Absolute or cwd-relative paths readable by the MCP server process. Max 50 files.",
+            "items": { "type": "string" }
+          },
+          "token": {
+            "type": "string",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+          },
+          "concurrency": {
+            "type": "integer",
+            "description": "Upload concurrency (default 5, max 10). Use 1 for free-tier accounts."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var."
+          }
+        },
+        "required": ["file_paths"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "results":              { "type": "array" },
+          "submitted_count":      { "type": "integer" },
+          "failed_count":         { "type": "integer" },
+          "quota_exceeded_count": { "type": "integer" },
+          "error":                { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "grill_jobs_status",
+      "description": "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming. Use periodically after grill_ingest or grill_ingest_batch to check progress. pending_count/done_count/failed_count give a quick summary.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "job_ids": {
+            "type": "array",
+            "description": "Job IDs to query. Max 50.",
+            "items": { "type": "string" }
+          },
+          "token": {
+            "type": "string",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+          }
+        },
+        "required": ["job_ids"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "results":       { "type": "array" },
+          "pending_count": { "type": "integer" },
+          "done_count":    { "type": "integer" },
+          "failed_count":  { "type": "integer" },
+          "error":         { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "grill_search",
+      "description": "Search the POMA Grill context engine and return a context block for RAG. Set doc_filter to restrict search to a specific document (use the job_id returned by grill_ingest as the doc_id). Use exclude_doc_ids to skip docs already cited in this conversation. Result count is bounded server-side by relevance and a token budget — there is no top_k.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural-language search query."
+          },
+          "doc_filter": {
+            "type": "string",
+            "description": "Optional doc_id to restrict search to a single document. When set, routes to the searchInDoc endpoint."
+          },
+          "exclude_doc_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Doc ids to exclude from results. Useful in agent loops to avoid re-citing docs already shown. Max 100."
+          },
+          "return_assets": {
+            "type": "boolean",
+            "description": "Return the cited documents' figures/tables in the `assets` output field (keyed by doc_id; images are base64 data URIs)."
+          },
+          "return_page_images": {
+            "type": "boolean",
+            "description": "DEPRECATED / not available — no-op today. Full-page screenshots are not returned inline."
+          },
+          "token": {
+            "type": "string",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var."
+          }
+        },
+        "required": ["query"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "context": {
+            "type": "string",
+            "description": "Concatenated chunk text for RAG prompting."
+          },
+          "assets": {
+            "type": "object",
+            "description": "Per-doc figures/tables when return_assets=true and at least one cited document has them, keyed by doc_id. Images are base64 data URIs. Absent when no cited document has assets (the API may send null or omit the field; both are treated as absent here)."
+          },
+          "error": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "grill_docs_list",
+      "description": "List documents currently ingested into POMA Grill for the authenticated project namespace. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.) — use grill_search to retrieve content. Pass a returned doc_id as doc_filter on grill_search to scope a query to a specific document.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+          },
+          "project_id": {
+            "type": "string",
+            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "documents":       { "type": "array" },
+          "namespace":       { "type": "string" },
+          "total_documents": { "type": "integer" },
+          "error":           { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "grill_projects",
+      "description": "List your accessible projects. Returns project IDs, names, product types, and protection status. Use this to find the project_id for a project by name before calling other Grill tools.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+          },
+          "product": {
+            "type": "string",
+            "enum": ["grill", "primecut"],
+            "description": "Filter by product type. If omitted, returns all projects."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "projects": { "type": "string", "description": "Human-readable list of accessible projects with IDs, names, products, and protection status." },
+          "error": { "type": "string" }
+        }
+      }
+    }
+  ]
+}

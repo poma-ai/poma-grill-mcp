@@ -1,0 +1,23 @@
+poma-mcp
+*.exe
+*.test
+*.out
+.DS_Store
+*/.DS_Store
+bin/
+.env
+CLAUDE.local.md
+events.jsonl
+.cursor
+.claude
+.agent/
+.playwright-mcp/
+.mcp.json
+.mcp.json.local
+test_files/
+
+# Node
+node/node_modules/
+node/dist/
+node/*.tsbuildinfo
+node/*.tgz
