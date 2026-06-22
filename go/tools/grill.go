@@ -63,7 +63,7 @@ var grillIngestTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest a file into POMA Grill (context engine). Trigger when the user says \"grill my ...\". Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search.",
+	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search.",
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -75,7 +75,7 @@ var grillIngestSyncTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest a file into POMA Grill; waits until terminal state. Trigger when the user says \"grill my ...\". Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events.",
+	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events.",
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -189,7 +189,7 @@ var grillIngestResumeTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "Resume tracking an in-progress POMA Grill ingestion job. Connects to the status SSE stream for the given job_id and waits until a terminal state (done, failed, grilled, deleted), emitting progress notifications. Use when grill_ingest was called earlier and you need to wait for completion.",
+	Description:  "Resume tracking an in-progress POMA Grill ingestion job started by an earlier grill_ingest call. Connects to the status SSE stream for the given job_id and waits until a terminal state (done, failed, grilled, deleted), emitting progress notifications.",
 	InputSchema:  grillIngestResumeInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -287,7 +287,7 @@ var grillSearchTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "Search the POMA Grill context engine and return a context block for RAG. Set doc_filter to restrict search to a specific document (use the job_id returned by grill_ingest as the doc_id). Use exclude_doc_ids to skip docs already cited in this conversation. Result count is bounded server-side by relevance and a token budget — there is no top_k.",
+	Description:  "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id, which equals the job_id from grill_ingest); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k.",
 	InputSchema:  grillSearchInputSchema,
 	OutputSchema: grillSearchOutputSchema,
 }
@@ -403,7 +403,7 @@ var grillDocsListTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "List documents currently ingested into POMA Grill for the authenticated project namespace. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.) — use grill_search to retrieve content. Pass a returned doc_id as doc_filter on grill_search to scope a query to a specific document.",
+	Description:  "List documents currently ingested into POMA Grill for the authenticated project namespace. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.); document content is retrieved via grill_search. A returned doc_id serves as the doc_filter on grill_search to scope a query to a specific document.",
 	InputSchema:  grillDocsListInputSchema,
 	OutputSchema: grillDocsListOutputSchema,
 }
@@ -505,7 +505,7 @@ var grillIngestBatchTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing. Use grill_jobs_status to monitor progress. On free-tier accounts use concurrency:1; the API returns 403 when the job queue is full — quota_exceed results can be retried once running jobs finish.",
+	Description:  "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing; progress is reported by grill_jobs_status. Free-tier accounts should set concurrency to 1; the API returns 403 when the job queue is full — quota_exceed results can be retried once running jobs finish.",
 	InputSchema:  grillIngestBatchInputSchema,
 	OutputSchema: grillIngestBatchOutputSchema,
 }
@@ -663,7 +663,7 @@ var grillJobsStatusTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming. Use periodically after grill_ingest or grill_ingest_batch to check progress. pending_count/done_count/failed_count give a quick summary.",
+	Description:  "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming — reporting progress for jobs created by grill_ingest or grill_ingest_batch. pending_count/done_count/failed_count give a quick summary.",
 	InputSchema:  grillJobsStatusInputSchema,
 	OutputSchema: grillJobsStatusOutputSchema,
 }
@@ -775,7 +775,7 @@ var grillProjectsTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "List your accessible projects. Returns project IDs, names, product types, and protection status. Use this to find the project_id for a project by name before calling other Grill tools.",
+	Description:  "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools.",
 	InputSchema:  grillProjectsInputSchema,
 	OutputSchema: grillProjectsOutputSchema,
 }
