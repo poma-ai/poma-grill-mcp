@@ -7,7 +7,7 @@ name: Docker
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
     # Publish semver tags as releases.
     # tags: [ 'v*.*.*' ]
 
@@ -19,10 +19,8 @@ env:
   APP_NAME: poma-grill-mcp
   ENV: dev
 
-
 jobs:
   build:
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,13 +42,12 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
         with:
-          cosign-release: 'v2.2.4'
+          cosign-release: "v2.2.4"
 
       # Set up QEMU to be able to build multi-platform images
       # - name: Set up QEMU
       #   uses: docker/setup-qemu-action@v3
-  
-        
+
       # Set up BuildKit Docker container builder to be able to build
       # multi-platform images and export cache
       # https://github.com/docker/setup-buildx-action
@@ -86,7 +83,7 @@ jobs:
           file: ./go/Dockerfile
           # platforms: linux/arm64,linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
-          tags:  ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.commit.outputs.short }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.commit.outputs.short }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -108,7 +105,7 @@ jobs:
 
       ### GitOps Deployment ###
       - name: Deploy Image
-        uses: nice-pink/repo-services@v12
+        uses: nice-pink/repo-services@3ed5588ae7843173c65ddaacd14758f2c683aaa4 # v12
         with:
           src-path: ./poma-deploy
           image-tag: ${{ steps.commit.outputs.short }}
