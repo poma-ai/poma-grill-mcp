@@ -543,14 +543,14 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 				return
 			}
 			if authErr := interpretAuthError(ctx, input.Token, st, body, "grill ingest"); authErr != "" {
-					results[i] = GrillIngestBatchResult{FilePath: fp, Error: authErr}
-					return
-				}
-				if st == http.StatusForbidden {
-					// interpretAuthError returned "" — this is a quota/capacity error, not auth.
-					results[i] = GrillIngestBatchResult{FilePath: fp, Error: fmt.Sprintf("quota exceeded: %s", string(body)), QuotaExceed: true}
-					return
-				}
+				results[i] = GrillIngestBatchResult{FilePath: fp, Error: authErr}
+				return
+			}
+			if st == http.StatusForbidden {
+				// interpretAuthError returned "" — this is a quota/capacity error, not auth.
+				results[i] = GrillIngestBatchResult{FilePath: fp, Error: fmt.Sprintf("quota exceeded: %s", string(body)), QuotaExceed: true}
+				return
+			}
 			if st != http.StatusCreated {
 				results[i] = GrillIngestBatchResult{FilePath: fp, Error: fmt.Sprintf("HTTP %d: %s", st, string(body))}
 				return
