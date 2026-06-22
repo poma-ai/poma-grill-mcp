@@ -91,7 +91,12 @@ var grillExplainOutputSchema = &jsonschema.Schema{
 }
 
 var grillExplainTool = &mcp.Tool{
-	Name:         "grill_explain",
+	Name: "grill_explain",
+	Annotations: &mcp.ToolAnnotations{
+		Title:         "Explain POMA Grill",
+		ReadOnlyHint:  true,
+		OpenWorldHint: boolPtr(false),
+	},
 	Description:  "Returns a structured explanation of how POMA Grill works: ingesting data, searching, result format, and how to get an API key. No arguments or authentication required.",
 	InputSchema:  grillExplainInputSchema,
 	OutputSchema: grillExplainOutputSchema,

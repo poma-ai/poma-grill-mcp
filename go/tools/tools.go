@@ -18,3 +18,7 @@ func Register(server *mcp.Server) {
 	// TODO: enable once poma-cli implements the underlying client methods
 	// mcp.AddTool(server, grillDocsDeleteTool, GrillDocsDelete)
 }
+
+// boolPtr returns a pointer to b, for the optional *bool tool-annotation hints
+// (DestructiveHint, OpenWorldHint) where nil means "unset / use spec default".
+func boolPtr(b bool) *bool { return &b }
