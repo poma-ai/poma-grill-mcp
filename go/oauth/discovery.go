@@ -73,7 +73,7 @@ func handleProtectedResourceMeta(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("oauth.protected_resource_meta", "remote_addr", r.RemoteAddr)
 
 	meta := protectedResourceMeta{
-		Resource:               publicBaseURL() + "/",
+		Resource:               publicBaseURL(),
 		AuthorizationServers:   []string{apiBaseURL()},
 		BearerMethodsSupported: []string{"header"},
 		ScopesSupported:        []string{"mcp.tools.read", "mcp.tools.write"},

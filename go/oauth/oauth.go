@@ -44,7 +44,7 @@ func loadJWTConfig() {
 		log.Fatal("oauth: POMA_MCP_RESOURCE is required when POMA_API_JWT_SECRET is set")
 	}
 	jwtSecret = []byte(secret)
-	mcpResourceURI = strings.TrimRight(resource, "/") + "/"
+	mcpResourceURI = strings.TrimRight(resource, "/")
 	slog.Info("oauth: JWT verification enabled", "resource", mcpResourceURI)
 }
 
