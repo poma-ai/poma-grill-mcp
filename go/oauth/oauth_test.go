@@ -128,6 +128,17 @@ func TestRequireBearer(t *testing.T) {
 			wantNext:   false,
 		},
 		{
+			name: "aud trailing-slash mismatch passes (Claude Desktop)",
+			setup: func(r *http.Request) {
+				// testResource has a trailing slash; Claude Code/langdock send the
+				// audience without one. The comparison must accept both.
+				tok := makeToken(t, []byte(testSecret), goodClaims("https://mcp.grill.poma-ai.com"))
+				r.Header.Set("Authorization", "Bearer "+tok)
+			},
+			wantStatus: http.StatusOK,
+			wantNext:   true,
+		},
+		{
 			name: "wrong typ returns 401",
 			setup: func(r *http.Request) {
 				c := goodClaims(testResource)
@@ -165,6 +176,8 @@ func TestAudContains(t *testing.T) {
 		want   bool
 	}{
 		{jwt.ClaimStrings{"https://mcp.grill.poma-ai.com/"}, "https://mcp.grill.poma-ai.com/", true},
+		{jwt.ClaimStrings{"https://mcp.grill.poma-ai.com"}, "https://mcp.grill.poma-ai.com/", true},  // aud no slash, target slash
+		{jwt.ClaimStrings{"https://mcp.grill.poma-ai.com/"}, "https://mcp.grill.poma-ai.com", true},  // aud slash, target no slash
 		{jwt.ClaimStrings{"https://other.com/"}, "https://mcp.grill.poma-ai.com/", false},
 		{jwt.ClaimStrings{"https://a.com/", "https://mcp.grill.poma-ai.com/"}, "https://mcp.grill.poma-ai.com/", true},
 		{jwt.ClaimStrings{}, "https://mcp.grill.poma-ai.com/", false},

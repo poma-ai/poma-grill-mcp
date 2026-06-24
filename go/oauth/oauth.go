@@ -175,10 +175,15 @@ func isJWTStructure(s string) bool {
 	return second >= 0
 }
 
-// audContains reports whether aud contains target.
+// audContains reports whether aud contains target, comparing trailing-slash-
+// insensitively. MCP clients disagree on whether the resource indicator carries
+// a trailing slash (Claude Code and langdock omit it; Claude Desktop appends
+// one), so the api mints tokens whose aud may or may not end in "/". Normalizing
+// both sides accepts every client without weakening the host/path check.
 func audContains(aud jwt.ClaimStrings, target string) bool {
+	target = strings.TrimRight(target, "/")
 	for _, a := range aud {
-		if a == target {
+		if strings.TrimRight(a, "/") == target {
 			return true
 		}
 	}
