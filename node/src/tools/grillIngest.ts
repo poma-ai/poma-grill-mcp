@@ -1,5 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { errorResult, getProjectID, getToken, interpretAuthError, successResult } from "../common.js";
+import { errorResult, getProjectID, getToken, interpretAuthError, interpretTooManyJobs, successResult } from "../common.js";
 import { GrillClient, parseJob } from "../client/grillClient.js";
 import { resolveIngestPayload } from "../client/ingestPayload.js";
 
@@ -28,6 +28,18 @@ export async function grillIngest(
   const res = await client.ingestRaw(resolved.data, resolved.filename);
   const authErr = interpretAuthError(args.token, res.status, res.body, "grill ingest");
   if (authErr) return errorResult(authErr);
+  const throttle = interpretTooManyJobs(res.status, res.body);
+  if (throttle.ok) {
+    return {
+      content: [{ type: "text", text: throttle.message }],
+      structuredContent: {
+        error: throttle.message,
+        retryable: true,
+        retry_after_seconds: throttle.retryAfterSeconds,
+      },
+      isError: true,
+    };
+  }
   if (res.status !== 201) {
     const text = new TextDecoder("utf-8").decode(res.body);
     return errorResult(`grill ingest: HTTP ${res.status}: ${text}`);

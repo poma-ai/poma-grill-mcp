@@ -139,6 +139,61 @@ export function interpretAuthError(
   return `${operation}: forbidden (HTTP 403). The token provided via ${src} was rejected. Response: ${text}`;
 }
 
+/**
+ * Recognises the job-capacity backpressure signal and returns an explicit
+ * throttle instruction plus the suggested retry delay in seconds. `ok` is false
+ * for any other response.
+ *
+ * The signal is HTTP 429 with code "too_many_jobs" (current API), a legacy 403
+ * carrying the same code, or the legacy plaintext body "too many jobs". The API
+ * also sets a Retry-After header; the JSON body's retry_after_seconds carries
+ * the same hint.
+ *
+ * The message is written FOR the calling agent (e.g. langdock firing a
+ * pipeline): the ingest did NOT happen, it is transient (retry the same ingest
+ * after the delay), and it must stop sending new ingests until capacity frees.
+ * This tool result is the only backpressure channel an LLM client sees.
+ */
+export function interpretTooManyJobs(
+  statusCode: number,
+  body: Uint8Array,
+): { ok: boolean; message: string; retryAfterSeconds: number } {
+  const text = new TextDecoder("utf-8").decode(body).trim();
+  let code: string | undefined;
+  let serverMessage: string | undefined;
+  let retryAfterSeconds = 0;
+  try {
+    const parsed = JSON.parse(text) as {
+      code?: string;
+      message?: string;
+      retry_after_seconds?: number;
+    };
+    code = parsed.code;
+    serverMessage = parsed.message;
+    if (typeof parsed.retry_after_seconds === "number") {
+      retryAfterSeconds = parsed.retry_after_seconds;
+    }
+  } catch {
+    // non-JSON body (e.g. legacy plaintext) — handled below
+  }
+
+  const isCapacity = statusCode === 429 || code === "too_many_jobs" || text === "too many jobs";
+  if (!isCapacity) {
+    return { ok: false, message: "", retryAfterSeconds: 0 };
+  }
+
+  if (retryAfterSeconds <= 0) retryAfterSeconds = 5;
+  const detail = serverMessage && serverMessage.length > 0 ? serverMessage : text;
+
+  const message =
+    `grill ingest: job queue full — the account is at its concurrent-job capacity (too_many_jobs). ` +
+    `This is a TRANSIENT backpressure signal, NOT a failure: the document was NOT ingested and no credits were spent. ` +
+    `Wait ~${retryAfterSeconds}s, then retry this same ingest. Do NOT send more ingests until capacity frees — ` +
+    `poll grill_jobs_status and resume only once active jobs drop below the account limit. Server: ${detail}`;
+
+  return { ok: true, message, retryAfterSeconds };
+}
+
 // Optional `text` override: callers whose structuredContent contains large
 // payloads (e.g. base64 image data URIs) can supply a slim text view rather
 // than restating the whole structure as JSON in the text content block.

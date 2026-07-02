@@ -48,9 +48,11 @@ var grillIngestInputSchema = &jsonschema.Schema{
 var grillIngestOutputSchema = &jsonschema.Schema{
 	Type: "object",
 	Properties: map[string]*jsonschema.Schema{
-		"job_id": {Type: "string"},
-		"events": {Type: "array"},
-		"error":  {Type: "string"},
+		"job_id":              {Type: "string"},
+		"events":              {Type: "array"},
+		"error":               {Type: "string"},
+		"retryable":           {Type: "boolean", Description: "True when the error is transient job-capacity backpressure (too_many_jobs): the ingest did not happen; retry the same call after retry_after_seconds and pause new ingests until capacity frees."},
+		"retry_after_seconds": {Type: "integer", Description: "Suggested seconds to wait before retrying when retryable is true."},
 	},
 }
 
@@ -63,7 +65,7 @@ var grillIngestTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search.",
+	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search. Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop.",
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -75,7 +77,7 @@ var grillIngestSyncTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events.",
+	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events. Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees.",
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -89,9 +91,11 @@ type GrillIngestInput struct {
 }
 
 type GrillIngestOutput struct {
-	JobID  string          `json:"job_id,omitempty"`
-	Events []jobStatusFull `json:"events,omitempty"`
-	Error  string          `json:"error,omitempty"`
+	JobID             string          `json:"job_id,omitempty"`
+	Events            []jobStatusFull `json:"events,omitempty"`
+	Error             string          `json:"error,omitempty"`
+	Retryable         bool            `json:"retryable,omitempty"`
+	RetryAfterSeconds int             `json:"retry_after_seconds,omitempty"`
 }
 
 func GrillIngest(ctx context.Context, req *mcp.CallToolRequest, input GrillIngestInput) (*mcp.CallToolResult, GrillIngestOutput, error) {
@@ -122,6 +126,9 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 	}
 	if authErr := interpretAuthError(ctx, input.Token, st, body, "grill ingest"); authErr != "" {
 		return errResult(), GrillIngestOutput{Error: authErr}, nil
+	}
+	if throttle, retryAfter, ok := interpretTooManyJobs(st, body); ok {
+		return errResult(), GrillIngestOutput{Error: throttle, Retryable: true, RetryAfterSeconds: retryAfter}, nil
 	}
 	if st != http.StatusCreated {
 		return errResult(), GrillIngestOutput{Error: fmt.Sprintf("grill ingest: HTTP %d: %s", st, string(body))}, nil
@@ -505,7 +512,7 @@ var grillIngestBatchTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing; progress is reported by grill_jobs_status. Free-tier accounts should set concurrency to 1; the API returns 403 when the job queue is full — quota_exceed results can be retried once running jobs finish.",
+	Description:  "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing; progress is reported by grill_jobs_status. Free-tier accounts should set concurrency to 1. When the account is at its concurrent-job capacity the API returns HTTP 429 too_many_jobs; those files come back with quota_exceed=true (counted in quota_exceeded_count) — they were NOT ingested. Retry only the quota_exceed files once running jobs finish (poll grill_jobs_status); lower concurrency if it recurs.",
 	InputSchema:  grillIngestBatchInputSchema,
 	OutputSchema: grillIngestBatchOutputSchema,
 }
@@ -580,8 +587,14 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 				results[i] = GrillIngestBatchResult{FilePath: fp, Error: authErr}
 				return
 			}
+			if throttle, _, ok := interpretTooManyJobs(st, body); ok {
+				// Job-capacity backpressure (HTTP 429 too_many_jobs). Transient —
+				// bucket as quota_exceed so the caller retries once slots free.
+				results[i] = GrillIngestBatchResult{FilePath: fp, Error: throttle, QuotaExceed: true}
+				return
+			}
 			if st == http.StatusForbidden {
-				// interpretAuthError returned "" — this is a quota/capacity error, not auth.
+				// interpretAuthError returned "" — legacy quota/capacity 403 (older API), not auth.
 				results[i] = GrillIngestBatchResult{FilePath: fp, Error: fmt.Sprintf("quota exceeded: %s", string(body)), QuotaExceed: true}
 				return
 			}

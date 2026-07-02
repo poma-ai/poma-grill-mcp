@@ -183,3 +183,53 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 		operation, src, bodyStr,
 	)
 }
+
+// interpretTooManyJobs recognises the job-capacity backpressure signal and, when
+// present, returns an explicit throttle instruction plus the suggested retry
+// delay in seconds. ok is false for any other response.
+//
+// The signal is HTTP 429 with code "too_many_jobs" (current API), a legacy 403
+// carrying the same code, or the legacy plaintext body "too many jobs". The API
+// also sets a Retry-After header, but the JSON body's retry_after_seconds
+// carries the same hint and is what we can read here without header access.
+//
+// The message is written FOR the calling agent (e.g. langdock firing a
+// pipeline): it states that the ingest did NOT happen, that this is transient
+// (retry the same ingest after the delay), and that it must stop sending new
+// ingests until capacity frees. This tool result is the only backpressure
+// channel an LLM client sees, so it has to be an imperative instruction, not a
+// terse error.
+func interpretTooManyJobs(statusCode int, body []byte) (msg string, retryAfter int, ok bool) {
+	var errResp struct {
+		Code              string `json:"code"`
+		Message           string `json:"message"`
+		RetryAfterSeconds int    `json:"retry_after_seconds"`
+	}
+	_ = json.Unmarshal(body, &errResp)
+
+	isCapacity := statusCode == http.StatusTooManyRequests ||
+		errResp.Code == "too_many_jobs" ||
+		strings.TrimSpace(string(body)) == "too many jobs"
+	if !isCapacity {
+		return "", 0, false
+	}
+
+	retryAfter = errResp.RetryAfterSeconds
+	if retryAfter <= 0 {
+		retryAfter = 5
+	}
+
+	detail := errResp.Message
+	if detail == "" {
+		detail = strings.TrimSpace(string(body))
+	}
+
+	msg = fmt.Sprintf(
+		"grill ingest: job queue full — the account is at its concurrent-job capacity (too_many_jobs). "+
+			"This is a TRANSIENT backpressure signal, NOT a failure: the document was NOT ingested and no credits were spent. "+
+			"Wait ~%ds, then retry this same ingest. Do NOT send more ingests until capacity frees — "+
+			"poll grill_jobs_status and resume only once active jobs drop below the account limit. Server: %s",
+		retryAfter, detail,
+	)
+	return msg, retryAfter, true
+}

@@ -1,5 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { errorResult, getProjectID, getToken, interpretAuthError, successResult, type ToolContext } from "../common.js";
+import { errorResult, getProjectID, getToken, interpretAuthError, interpretTooManyJobs, successResult, type ToolContext } from "../common.js";
 import { GrillClient, parseJob } from "../client/grillClient.js";
 import { resolveIngestPayload } from "../client/ingestPayload.js";
 
@@ -53,8 +53,15 @@ export async function grillIngestBatch(
                 results[i] = { file_path: fp, error: authErrMsg };
                 return;
               }
+              const throttle = interpretTooManyJobs(res.status, res.body);
+              if (throttle.ok) {
+                // Job-capacity backpressure (HTTP 429 too_many_jobs). Transient —
+                // bucket as quota_exceed so the caller retries once slots free.
+                results[i] = { file_path: fp, error: throttle.message, quota_exceed: true };
+                return;
+              }
               if (res.status === 403) {
-                // interpretAuthError returned undefined — this is a quota/capacity error, not auth.
+                // interpretAuthError returned undefined — legacy quota/capacity 403 (older API), not auth.
                 const bodyText = new TextDecoder("utf-8").decode(res.body);
                 results[i] = { file_path: fp, error: `quota exceeded: ${bodyText}`, quota_exceed: true };
                 return;
