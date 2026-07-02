@@ -31,7 +31,7 @@ jobs:
 
     steps:
     - id: commit
-      uses: pt/actions-commit-hash@9e673021a12f5b5506d4da77ffbb8446e8a37b4a # v4
+      run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
     - name: Checkout repository
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
