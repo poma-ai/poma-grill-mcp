@@ -315,3 +315,8 @@ Both implementations accept the same flags.
 ## License
 
 MPL-2.0
+
+---
+
+POMA AI · Made in Berlin
+Founder & CEO Alexander Kihm
