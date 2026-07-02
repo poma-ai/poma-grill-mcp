@@ -146,29 +146,52 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 		)
 	}
 
-	// 403 — try to parse JSON error code for a specific message.
+	// 403 — try to parse the JSON error envelope for a specific message.
+	//
+	// Two wire shapes: the migrated envelope carries a snake_case `reason`
+	// discriminator (and `code` becomes the numeric HTTP status), while the
+	// legacy envelope carries the discriminator as the string `code`. Switch on
+	// `reason` when present and never fall through to the code-string switch —
+	// the numeric code deserializes to "403" and matches no token. Only the
+	// pre-migration server (empty `reason`) uses the legacy string `code`.
 	var errResp struct {
-		Code string `json:"code"`
+		Code   json.RawMessage `json:"code"`
+		Reason string          `json:"reason"`
 	}
 	if json.Unmarshal(body, &errResp) == nil {
-		switch errResp.Code {
-		case "too_many_jobs", "quota_exceeded":
-			// Not an auth error — this is a capacity/quota limit.
-			return ""
-		case "project_protected":
-			return fmt.Sprintf(
-				"%s: this project is protected (HTTP 403). The token provided via %s is an account-level key, "+
-					"but this project requires a project API key. Generate one at https://console.poma-ai.com in the project settings, "+
-					"or set the project to unprotected.",
-				operation, src,
-			)
-		case "forbidden":
-			return fmt.Sprintf(
-				"%s: access denied (HTTP 403). The token provided via %s does not have access to this project — "+
-					"you may not own it or aren't a member of the organization. "+
-					"Use grill_projects to list projects accessible with your current key.",
-				operation, src,
-			)
+		code := strings.Trim(string(errResp.Code), `"`)
+		projectProtectedMsg := fmt.Sprintf(
+			"%s: this project is protected (HTTP 403). The token provided via %s is an account-level key, "+
+				"but this project requires a project API key. Generate one at https://console.poma-ai.com in the project settings, "+
+				"or set the project to unprotected.",
+			operation, src,
+		)
+		forbiddenMsg := fmt.Sprintf(
+			"%s: access denied (HTTP 403). The token provided via %s does not have access to this project — "+
+				"you may not own it or aren't a member of the organization. "+
+				"Use grill_projects to list projects accessible with your current key.",
+			operation, src,
+		)
+		if errResp.Reason != "" {
+			switch errResp.Reason {
+			case "too_many_jobs", "quota_exceeded":
+				// Not an auth error — this is a capacity/quota limit.
+				return ""
+			case "project_protected":
+				return projectProtectedMsg
+			case "forbidden":
+				return forbiddenMsg
+			}
+		} else {
+			switch code {
+			case "too_many_jobs", "quota_exceeded":
+				// Not an auth error — this is a capacity/quota limit.
+				return ""
+			case "project_protected":
+				return projectProtectedMsg
+			case "forbidden":
+				return forbiddenMsg
+			}
 		}
 	}
 
@@ -200,15 +223,21 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 // channel an LLM client sees, so it has to be an imperative instruction, not a
 // terse error.
 func interpretTooManyJobs(statusCode int, body []byte) (msg string, retryAfter int, ok bool) {
+	// code is numeric (429) on the current API and a string ("too_many_jobs") on
+	// legacy 403 responses — RawMessage accepts either without a decode error.
 	var errResp struct {
-		Code              string `json:"code"`
-		Message           string `json:"message"`
-		RetryAfterSeconds int    `json:"retry_after_seconds"`
+		Code              json.RawMessage `json:"code"`
+		Reason            string          `json:"reason"`
+		Error             string          `json:"error"`
+		Message           string          `json:"message"`
+		RetryAfterSeconds int             `json:"retry_after_seconds"`
 	}
 	_ = json.Unmarshal(body, &errResp)
+	code := strings.Trim(string(errResp.Code), `"`)
 
 	isCapacity := statusCode == http.StatusTooManyRequests ||
-		errResp.Code == "too_many_jobs" ||
+		errResp.Reason == "too_many_jobs" ||
+		code == "too_many_jobs" ||
 		strings.TrimSpace(string(body)) == "too many jobs"
 	if !isCapacity {
 		return "", 0, false
@@ -219,7 +248,13 @@ func interpretTooManyJobs(statusCode int, body []byte) (msg string, retryAfter i
 		retryAfter = 5
 	}
 
-	detail := errResp.Message
+	// The migrated envelope renames the human field message→error; read error
+	// first so the LLM detail stays populated across the rename, falling back to
+	// the legacy message and finally the raw body.
+	detail := errResp.Error
+	if detail == "" {
+		detail = errResp.Message
+	}
 	if detail == "" {
 		detail = strings.TrimSpace(string(body))
 	}

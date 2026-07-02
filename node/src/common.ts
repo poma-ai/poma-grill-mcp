@@ -105,27 +105,52 @@ export function interpretAuthError(
     );
   }
 
-  // 403 — try to parse JSON error code for a specific message.
+  // 403 — try to parse the JSON error envelope for a specific message.
+  //
+  // Two wire shapes: the migrated envelope carries a snake_case `reason`
+  // discriminator (and `code` becomes the numeric HTTP status), while the
+  // legacy envelope carries the discriminator as the string `code`. Switch on
+  // `reason` when present; otherwise switch on `code` ONLY if it is a string —
+  // never `switch (errResp.code)` unguarded, since post-migration `code` is the
+  // numeric status and would fall through for every 403.
   const text = new TextDecoder("utf-8").decode(body).trim();
+  const projectProtectedMsg =
+    `${operation}: this project is protected (HTTP 403). The token provided via ${src} is an account-level key, ` +
+    `but this project requires a project API key. Generate one at https://console.poma-ai.com in the project settings, ` +
+    `or set the project to unprotected.`;
+  const forbiddenMsg =
+    `${operation}: access denied (HTTP 403). The token provided via ${src} does not have access to this project — ` +
+    `you may not own it or aren't a member of the organization. ` +
+    `Use grill_projects to list projects accessible with your current key.`;
   try {
-    const errResp = JSON.parse(text) as { code?: string };
-    switch (errResp.code) {
-      case "too_many_jobs":
-      case "quota_exceeded":
-        // Not an auth error — this is a capacity/quota limit.
-        return undefined;
-      case "project_protected":
-        return (
-          `${operation}: this project is protected (HTTP 403). The token provided via ${src} is an account-level key, ` +
-          `but this project requires a project API key. Generate one at https://console.poma-ai.com in the project settings, ` +
-          `or set the project to unprotected.`
-        );
-      case "forbidden":
-        return (
-          `${operation}: access denied (HTTP 403). The token provided via ${src} does not have access to this project — ` +
-          `you may not own it or aren't a member of the organization. ` +
-          `Use grill_projects to list projects accessible with your current key.`
-        );
+    const errResp = JSON.parse(text) as {
+      code?: string | number;
+      reason?: string;
+      error?: string;
+      message?: string;
+    };
+    if (errResp.reason) {
+      switch (errResp.reason) {
+        case "too_many_jobs":
+        case "quota_exceeded":
+          // Not an auth error — this is a capacity/quota limit.
+          return undefined;
+        case "project_protected":
+          return projectProtectedMsg;
+        case "forbidden":
+          return forbiddenMsg;
+      }
+    } else if (typeof errResp.code === "string") {
+      switch (errResp.code) {
+        case "too_many_jobs":
+        case "quota_exceeded":
+          // Not an auth error — this is a capacity/quota limit.
+          return undefined;
+        case "project_protected":
+          return projectProtectedMsg;
+        case "forbidden":
+          return forbiddenMsg;
+      }
     }
   } catch {
     // fall through to generic
@@ -159,17 +184,25 @@ export function interpretTooManyJobs(
   body: Uint8Array,
 ): { ok: boolean; message: string; retryAfterSeconds: number } {
   const text = new TextDecoder("utf-8").decode(body).trim();
-  let code: string | undefined;
+  // code is numeric (429) on the current API and a string ("too_many_jobs") on
+  // legacy 403 responses; reason carries the discriminator on the current API.
+  let code: string | number | undefined;
+  let reason: string | undefined;
   let serverMessage: string | undefined;
   let retryAfterSeconds = 0;
   try {
     const parsed = JSON.parse(text) as {
-      code?: string;
+      code?: string | number;
+      reason?: string;
+      error?: string;
       message?: string;
       retry_after_seconds?: number;
     };
     code = parsed.code;
-    serverMessage = parsed.message;
+    reason = parsed.reason;
+    // The migrated envelope renames the human field message→error; prefer error
+    // so the LLM detail stays populated across the rename.
+    serverMessage = parsed.error ?? parsed.message;
     if (typeof parsed.retry_after_seconds === "number") {
       retryAfterSeconds = parsed.retry_after_seconds;
     }
@@ -177,7 +210,8 @@ export function interpretTooManyJobs(
     // non-JSON body (e.g. legacy plaintext) — handled below
   }
 
-  const isCapacity = statusCode === 429 || code === "too_many_jobs" || text === "too many jobs";
+  const isCapacity =
+    statusCode === 429 || reason === "too_many_jobs" || code === "too_many_jobs" || text === "too many jobs";
   if (!isCapacity) {
     return { ok: false, message: "", retryAfterSeconds: 0 };
   }
