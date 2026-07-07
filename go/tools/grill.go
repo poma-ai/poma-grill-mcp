@@ -2,12 +2,15 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -50,6 +53,7 @@ var grillIngestOutputSchema = &jsonschema.Schema{
 	Properties: map[string]*jsonschema.Schema{
 		"job_id":              {Type: "string"},
 		"events":              {Type: "array"},
+		"scope":               scopeSchema,
 		"error":               {Type: "string"},
 		"retryable":           {Type: "boolean", Description: "True when the error is transient job-capacity backpressure (too_many_jobs): the ingest did not happen; retry the same call after retry_after_seconds and pause new ingests until capacity frees."},
 		"retry_after_seconds": {Type: "integer", Description: "Suggested seconds to wait before retrying when retryable is true."},
@@ -65,7 +69,7 @@ var grillIngestTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search. Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop.",
+	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop.",
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -77,7 +81,7 @@ var grillIngestSyncTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events. Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees.",
+	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees.",
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -93,6 +97,7 @@ type GrillIngestInput struct {
 type GrillIngestOutput struct {
 	JobID             string          `json:"job_id,omitempty"`
 	Events            []jobStatusFull `json:"events,omitempty"`
+	Scope             *GrillScope     `json:"scope,omitempty"`
 	Error             string          `json:"error,omitempty"`
 	Retryable         bool            `json:"retryable,omitempty"`
 	RetryAfterSeconds int             `json:"retry_after_seconds,omitempty"`
@@ -140,8 +145,11 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 	}
 	slog.Info("grill ingest job_id", "job_id", j.JobID)
 
+	_, source := projectIDSource(input.ProjectID)
+	scope := resolveScope(c, token, projectID, "", source)
+
 	if !waitTerminal {
-		return nil, GrillIngestOutput{JobID: j.JobID}, nil
+		return nil, GrillIngestOutput{JobID: j.JobID, Scope: scope}, nil
 	}
 
 	var events []jobStatusFull
@@ -167,7 +175,7 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 		}
 	}
 	slog.Info("grill ingest done", "job_id", j.JobID)
-	return nil, GrillIngestOutput{JobID: j.JobID, Events: events}, nil
+	return nil, GrillIngestOutput{JobID: j.JobID, Events: events, Scope: scope}, nil
 }
 
 // -- Grill Ingest Resume ---------------------------------------------
@@ -283,6 +291,7 @@ var grillSearchOutputSchema = &jsonschema.Schema{
 	Properties: map[string]*jsonschema.Schema{
 		"context": {Type: "string", Description: "Concatenated chunk text for RAG prompting."},
 		"assets":  {Type: "object", Description: "Per-doc figures/tables when return_assets=true, keyed by doc_id. Images are base64 data URIs. Omitted when none."},
+		"scope":   scopeSchema,
 		"error":   {Type: "string"},
 	},
 }
@@ -294,7 +303,7 @@ var grillSearchTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id, which equals the job_id from grill_ingest); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k.",
+	Description:  "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id, which equals the job_id from grill_ingest); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k. The response includes a `scope` object identifying which project was searched — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results.",
 	InputSchema:  grillSearchInputSchema,
 	OutputSchema: grillSearchOutputSchema,
 }
@@ -318,6 +327,7 @@ type GrillSearchOutput struct {
 	// practice grill sends `assets: null` for no-figures and api/go's
 	// omitempty collapses it to absent, so both variants simply drop it.
 	Assets map[string]any `json:"assets,omitzero"`
+	Scope  *GrillScope    `json:"scope,omitempty"`
 	Error  string         `json:"error,omitempty"`
 }
 
@@ -370,14 +380,216 @@ func GrillSearch(ctx context.Context, _ *mcp.CallToolRequest, input GrillSearchI
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return errResult(), GrillSearchOutput{Error: fmt.Sprintf("grill search: parse response: %v", err)}, nil
 	}
-	slog.Info("grill search", "doc_filter", input.DocFilter, "context_bytes", len(result.Context), "assets_docs", len(result.Assets))
+	_, source := projectIDSource(input.ProjectID)
+	scope := resolveScope(c, token, projectID, "", source)
+	slog.Info("grill search", "doc_filter", input.DocFilter, "context_bytes", len(result.Context), "assets_docs", len(result.Assets), "project", scope.ProjectName)
 	// Set Content explicitly to just the prompt-ready context text so the
 	// assets payload (potentially large base64 image data URIs) doesn't get
 	// duplicated into the text content block — the SDK still populates
 	// StructuredContent from the typed output (see go-sdk mcp/server.go).
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: result.Context}},
-	}, GrillSearchOutput{Context: result.Context, Assets: result.Assets}, nil
+	}, GrillSearchOutput{Context: result.Context, Assets: result.Assets, Scope: scope}, nil
+}
+
+// -- Project Scope ---------------------------------------------------
+//
+// Every grill operation runs against exactly one project namespace. Named
+// projects use their project_id as the namespace; the account's default
+// workspace uses "account_<account_id>". These tools surface which project the
+// data belongs to via a `scope` object so the calling LLM can always tell the
+// user, e.g. "these documents belong to your Default Workspace".
+
+// GrillScope describes which project an operation's data belongs to.
+type GrillScope struct {
+	ProjectName string `json:"project_name,omitempty"`
+	ProjectID   string `json:"project_id,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`
+	IsDefault   bool   `json:"is_default,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Hint        string `json:"hint,omitempty"`
+}
+
+// scopeSchema is the shared output schema entry for the scope object.
+var scopeSchema = &jsonschema.Schema{
+	Type:        "object",
+	Description: "Which project this result belongs to. ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results.",
+	Properties: map[string]*jsonschema.Schema{
+		"project_name": {Type: "string", Description: "Human-readable project name, e.g. \"Default Workspace\"."},
+		"project_id":   {Type: "string"},
+		"namespace":    {Type: "string"},
+		"is_default":   {Type: "boolean", Description: "True when this is the account's default workspace (no specific project selected)."},
+		"source":       {Type: "string", Description: "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default)."},
+		"hint":         {Type: "string", Description: "Ready-to-relay sentence naming the project for the user."},
+	},
+}
+
+// projectsCache memoizes the /projects listing per token so scope resolution
+// does not add a round-trip to every search/ingest. Entries expire after
+// projectsCacheTTL; the default workspace never changes, so even a stale cache
+// resolves the common (account-default) case correctly.
+//
+// MULTI-TENANT SAFETY: this MCP is deployed and serves many users concurrently,
+// each with their own token. The cache is partitioned by a hash of the token, so
+// an entry is only ever readable by a caller presenting the SAME token — i.e.
+// the same account. A user can never read another user's cached projects. The
+// token itself is never stored (only its SHA-256), so raw secrets are not
+// retained in memory, and expired entries are evicted so the map stays bounded
+// to roughly the number of users active within a TTL window.
+const (
+	projectsCacheTTL        = 5 * time.Minute
+	projectsCacheMaxEntries = 10000 // pathological-churn backstop
+)
+
+type projectsCacheEntry struct {
+	projects []grillProject
+	expires  time.Time
+}
+
+var (
+	projectsCacheMu sync.Mutex
+	projectsCache   = map[string]projectsCacheEntry{}
+	// nowFunc is overridable in tests to exercise expiry deterministically.
+	nowFunc = time.Now
+)
+
+// projectsCacheKey derives a non-reversible per-token key. Different tokens
+// (different users) always map to different keys; the raw token is never used as
+// a map key, so it is not retained in the cache.
+func projectsCacheKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func projectsCacheGet(token string) ([]grillProject, bool) {
+	if token == "" {
+		return nil, false
+	}
+	key := projectsCacheKey(token)
+	projectsCacheMu.Lock()
+	defer projectsCacheMu.Unlock()
+	e, ok := projectsCache[key]
+	if !ok || !nowFunc().Before(e.expires) {
+		return nil, false
+	}
+	return e.projects, true
+}
+
+func projectsCachePut(token string, projects []grillProject) {
+	if token == "" {
+		return
+	}
+	key := projectsCacheKey(token)
+	now := nowFunc()
+	projectsCacheMu.Lock()
+	defer projectsCacheMu.Unlock()
+	// Evict expired entries so the map stays bounded to active users.
+	for k, e := range projectsCache {
+		if !now.Before(e.expires) {
+			delete(projectsCache, k)
+		}
+	}
+	// Hard backstop against pathological churn (many short-lived tokens).
+	if len(projectsCache) >= projectsCacheMaxEntries {
+		projectsCache = make(map[string]projectsCacheEntry)
+	}
+	projectsCache[key] = projectsCacheEntry{projects: projects, expires: now.Add(projectsCacheTTL)}
+}
+
+// fetchProjectsCached returns the token's grill projects, using a short-lived
+// cache. Returns nil on any error — scope resolution degrades gracefully and
+// never blocks the primary operation.
+func fetchProjectsCached(c *client.Client, token string) []grillProject {
+	if projects, ok := projectsCacheGet(token); ok {
+		return projects
+	}
+	body, st, err := grillListProjects(c, "grill")
+	if err != nil || st != http.StatusOK {
+		return nil
+	}
+	projects, err := parseProjects(body)
+	if err != nil {
+		return nil
+	}
+	projectsCachePut(token, projects)
+	return projects
+}
+
+// resolveScope maps a request's project context to a friendly scope. Provide the
+// authoritative namespace when known (grill_docs_list returns it); otherwise
+// pass "" and the resolved project_id. It never returns nil.
+func resolveScope(c *client.Client, token, resolvedProjectID, namespace, source string) *GrillScope {
+	return scopeFromProjects(fetchProjectsCached(c, token), resolvedProjectID, namespace, source)
+}
+
+// scopeFromProjects is the pure mapping from a project listing + request context
+// to a friendly scope. Split out from resolveScope so it is testable without a
+// network round-trip. projects may be nil (resolution degrades to the raw
+// identifiers). It never returns nil.
+func scopeFromProjects(projects []grillProject, resolvedProjectID, namespace, source string) *GrillScope {
+	scope := &GrillScope{ProjectID: resolvedProjectID, Namespace: namespace, Source: source}
+
+	find := func(pred func(grillProject) bool) *grillProject {
+		for i := range projects {
+			if pred(projects[i]) {
+				return &projects[i]
+			}
+		}
+		return nil
+	}
+
+	var p *grillProject
+	switch {
+	case namespace != "":
+		// Grill docs namespaces are "account_<account_id>" for the default
+		// workspace and "proj_<project_id>" for named projects. Tolerate a bare
+		// id too, in case the wire format changes.
+		if acct, ok := strings.CutPrefix(namespace, "account_"); ok {
+			p = find(func(x grillProject) bool {
+				return x.Product == "grill" && x.IsDefault && x.AccountID == acct
+			})
+		} else {
+			id := strings.TrimPrefix(namespace, "proj_")
+			p = find(func(x grillProject) bool {
+				return x.ProjectID == id || x.ID == id
+			})
+		}
+	case resolvedProjectID != "":
+		p = find(func(x grillProject) bool {
+			return x.ProjectID == resolvedProjectID || x.ID == resolvedProjectID
+		})
+	default:
+		// Account default: the key owner's default grill workspace (own account,
+		// not an org's) — identified by is_default with no orga.
+		p = find(func(x grillProject) bool {
+			return x.Product == "grill" && x.IsDefault && x.OrgaID == ""
+		})
+	}
+
+	if p != nil {
+		scope.ProjectName = p.Name
+		scope.ProjectID = p.ProjectID
+		scope.IsDefault = p.IsDefault
+		if scope.Namespace == "" {
+			if p.IsDefault {
+				scope.Namespace = "account_" + p.AccountID
+			} else {
+				scope.Namespace = "proj_" + p.ProjectID
+			}
+		}
+	}
+
+	switch {
+	case scope.ProjectName != "" && scope.IsDefault:
+		scope.Hint = fmt.Sprintf("This belongs to your default grill workspace %q — no specific project is selected. Pass project_id or set POMA_PROJECT_ID to target another project.", scope.ProjectName)
+	case scope.ProjectName != "":
+		scope.Hint = fmt.Sprintf("Scoped to project %q.", scope.ProjectName)
+	case resolvedProjectID != "":
+		scope.Hint = fmt.Sprintf("Scoped to project_id %s (name unavailable).", resolvedProjectID)
+	default:
+		scope.Hint = "This belongs to your default grill workspace — no specific project is selected."
+	}
+	return scope
 }
 
 // -- Grill Docs List -------------------------------------------------
@@ -399,6 +611,7 @@ var grillDocsListOutputSchema = &jsonschema.Schema{
 		"documents":       {Type: "array"},
 		"namespace":       {Type: "string"},
 		"total_documents": {Type: "integer"},
+		"scope":           scopeSchema,
 		"error":           {Type: "string"},
 	},
 }
@@ -410,7 +623,7 @@ var grillDocsListTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "List documents currently ingested into POMA Grill for the authenticated project namespace. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.); document content is retrieved via grill_search. A returned doc_id serves as the doc_filter on grill_search to scope a query to a specific document.",
+	Description:  "List documents currently ingested into POMA Grill for the authenticated project namespace. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.); document content is retrieved via grill_search. A returned doc_id serves as the doc_filter on grill_search to scope a query to a specific document. The response includes a `scope` object identifying which project these documents belong to — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting the list.",
 	InputSchema:  grillDocsListInputSchema,
 	OutputSchema: grillDocsListOutputSchema,
 }
@@ -438,6 +651,7 @@ type GrillDocsListOutput struct {
 	Documents      []GrillDocInfo `json:"documents"`
 	Namespace      string         `json:"namespace,omitempty"`
 	TotalDocuments int            `json:"total_documents"`
+	Scope          *GrillScope    `json:"scope,omitempty"`
 	Error          string         `json:"error,omitempty"`
 }
 
@@ -467,7 +681,9 @@ func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsL
 	if out.Documents == nil {
 		out.Documents = []GrillDocInfo{}
 	}
-	slog.Info("grill docs list", "count", out.TotalDocuments, "namespace", out.Namespace)
+	_, source := projectIDSource(input.ProjectID)
+	out.Scope = resolveScope(c, token, projectID, out.Namespace, source)
+	slog.Info("grill docs list", "count", out.TotalDocuments, "namespace", out.Namespace, "project", out.Scope.ProjectName)
 	return nil, out, nil
 }
 
@@ -501,6 +717,7 @@ var grillIngestBatchOutputSchema = &jsonschema.Schema{
 		"submitted_count":      {Type: "integer"},
 		"failed_count":         {Type: "integer"},
 		"quota_exceeded_count": {Type: "integer"},
+		"scope":                scopeSchema,
 		"error":                {Type: "string"},
 	},
 }
@@ -512,7 +729,7 @@ var grillIngestBatchTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing; progress is reported by grill_jobs_status. Free-tier accounts should set concurrency to 1. When the account is at its concurrent-job capacity the API returns HTTP 429 too_many_jobs; those files come back with quota_exceed=true (counted in quota_exceeded_count) — they were NOT ingested. Retry only the quota_exceed files once running jobs finish (poll grill_jobs_status); lower concurrency if it recurs.",
+	Description:  "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing; progress is reported by grill_jobs_status. The response includes a `scope` object identifying which project the documents were ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Free-tier accounts should set concurrency to 1. When the account is at its concurrent-job capacity the API returns HTTP 429 too_many_jobs; those files come back with quota_exceed=true (counted in quota_exceeded_count) — they were NOT ingested. Retry only the quota_exceed files once running jobs finish (poll grill_jobs_status); lower concurrency if it recurs.",
 	InputSchema:  grillIngestBatchInputSchema,
 	OutputSchema: grillIngestBatchOutputSchema,
 }
@@ -536,6 +753,7 @@ type GrillIngestBatchOutput struct {
 	SubmittedCount     int                      `json:"submitted_count"`
 	FailedCount        int                      `json:"failed_count"`
 	QuotaExceededCount int                      `json:"quota_exceeded_count"`
+	Scope              *GrillScope              `json:"scope,omitempty"`
 	Error              string                   `json:"error,omitempty"`
 }
 
@@ -637,6 +855,8 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 		out.Error = fmt.Sprintf("all %d file(s) failed to submit", len(results))
 		return errResult(), out, nil
 	}
+	_, source := projectIDSource(input.ProjectID)
+	out.Scope = resolveScope(c, token, projectID, "", source)
 	return nil, out, nil
 }
 
@@ -805,10 +1025,29 @@ type GrillProjectsOutput struct {
 
 type grillProject struct {
 	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	AccountID string `json:"account_id"`
 	Name      string `json:"name"`
 	Product   string `json:"product"`
 	Protected bool   `json:"protected"`
-	OrgID     string `json:"org_id,omitempty"`
+	OrgaID    string `json:"orga_id,omitempty"`
+	IsDefault bool   `json:"is_default"`
+}
+
+// parseProjects decodes the /projects response, accepting either a bare array or
+// a { "projects": [...] } wrapper.
+func parseProjects(body []byte) ([]grillProject, error) {
+	var projects []grillProject
+	if err := json.Unmarshal(body, &projects); err != nil {
+		var wrapped struct {
+			Projects []grillProject `json:"projects"`
+		}
+		if err2 := json.Unmarshal(body, &wrapped); err2 != nil {
+			return nil, err
+		}
+		projects = wrapped.Projects
+	}
+	return projects, nil
 }
 
 func GrillProjects(ctx context.Context, _ *mcp.CallToolRequest, input GrillProjectsInput) (*mcp.CallToolResult, GrillProjectsOutput, error) {
@@ -829,16 +1068,9 @@ func GrillProjects(ctx context.Context, _ *mcp.CallToolRequest, input GrillProje
 		return errResult(), GrillProjectsOutput{Error: fmt.Sprintf("grill projects: HTTP %d: %s", st, string(body))}, nil
 	}
 
-	var projects []grillProject
-	if err := json.Unmarshal(body, &projects); err != nil {
-		// Try wrapped response { "projects": [...] }
-		var wrapped struct {
-			Projects []grillProject `json:"projects"`
-		}
-		if err2 := json.Unmarshal(body, &wrapped); err2 != nil {
-			return errResult(), GrillProjectsOutput{Error: fmt.Sprintf("grill projects: parse response: %v", err)}, nil
-		}
-		projects = wrapped.Projects
+	projects, err := parseProjects(body)
+	if err != nil {
+		return errResult(), GrillProjectsOutput{Error: fmt.Sprintf("grill projects: parse response: %v", err)}, nil
 	}
 
 	if len(projects) == 0 {
@@ -848,9 +1080,9 @@ func GrillProjects(ctx context.Context, _ *mcp.CallToolRequest, input GrillProje
 	var sb strings.Builder
 	sb.WriteString("Projects:\n")
 	for _, p := range projects {
-		line := fmt.Sprintf("- %s (project_id: %s, product: %s, protected: %v", p.Name, p.ID, p.Product, p.Protected)
-		if p.OrgID != "" {
-			line += fmt.Sprintf(", org: %s", p.OrgID)
+		line := fmt.Sprintf("- %s (project_id: %s, product: %s, protected: %v, default: %v", p.Name, p.ID, p.Product, p.Protected, p.IsDefault)
+		if p.OrgaID != "" {
+			line += fmt.Sprintf(", org: %s", p.OrgaID)
 		}
 		line += ")"
 		sb.WriteString(line + "\n")

@@ -93,6 +93,18 @@ func getProjectID(inputProjectID string) string {
 	return os.Getenv("POMA_PROJECT_ID")
 }
 
+// projectIDSource resolves the project ID and reports where it came from, for
+// the human-readable scope hint.
+func projectIDSource(inputProjectID string) (id, source string) {
+	if inputProjectID != "" {
+		return inputProjectID, "project_id argument"
+	}
+	if v := os.Getenv("POMA_PROJECT_ID"); v != "" {
+		return v, "POMA_PROJECT_ID env var"
+	}
+	return "", "account default (no project_id set)"
+}
+
 // getToken resolves the API token with this priority:
 //  1. Explicit tool argument
 //  2. Per-request token injected by HTTP middleware (x-api-key header)
