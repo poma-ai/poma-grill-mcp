@@ -611,8 +611,12 @@ var grillDocsListOutputSchema = &jsonschema.Schema{
 		"documents":       {Type: "array"},
 		"namespace":       {Type: "string"},
 		"total_documents": {Type: "integer"},
-		"scope":           scopeSchema,
-		"error":           {Type: "string"},
+		"note": {
+			Type:        "string",
+			Description: "Present only when the returned documents are fewer than total_documents (internal pagination cap reached, a follow-up page failed, or some documents were temporarily unavailable). Explains the gap.",
+		},
+		"scope": scopeSchema,
+		"error": {Type: "string"},
 	},
 }
 
@@ -623,7 +627,7 @@ var grillDocsListTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "List documents currently ingested into POMA Grill for the authenticated project namespace. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.); document content is retrieved via grill_search. A returned doc_id serves as the doc_filter on grill_search to scope a query to a specific document. The response includes a `scope` object identifying which project these documents belong to — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting the list.",
+	Description:  "List documents currently ingested into POMA Grill for the authenticated project namespace. The tool follows server-side pagination internally and returns the complete merged list in one response; `total_documents` is the authoritative full count. If fewer documents than total_documents are returned (safety cap or temporarily unavailable documents), a `note` field explains the gap — surface it to the user. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.); document content is retrieved via grill_search. A returned doc_id serves as the doc_filter on grill_search to scope a query to a specific document. The response includes a `scope` object identifying which project these documents belong to — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting the list.",
 	InputSchema:  grillDocsListInputSchema,
 	OutputSchema: grillDocsListOutputSchema,
 }
@@ -651,8 +655,50 @@ type GrillDocsListOutput struct {
 	Documents      []GrillDocInfo `json:"documents"`
 	Namespace      string         `json:"namespace,omitempty"`
 	TotalDocuments int            `json:"total_documents"`
+	Note           string         `json:"note,omitempty"`
 	Scope          *GrillScope    `json:"scope,omitempty"`
 	Error          string         `json:"error,omitempty"`
+}
+
+// grillDocsMaxPages caps transparent auto-paging: the tool follows next_cursor
+// for at most this many pages per call, then returns what it has accumulated
+// with a truncation note.
+const grillDocsMaxPages = 10
+
+// grillDocsPage is one wire page of GET /grill/docs. On the currently deployed
+// API has_more/next_cursor/degraded are absent and unmarshal to their zero
+// values, which collapses the auto-paging loop to exactly one request —
+// today's single-request behavior.
+type grillDocsPage struct {
+	Documents      []GrillDocInfo `json:"documents"`
+	Namespace      string         `json:"namespace"`
+	TotalDocuments int            `json:"total_documents"`
+	HasMore        bool           `json:"has_more"`
+	NextCursor     string         `json:"next_cursor"`
+	Degraded       bool           `json:"degraded"`
+}
+
+// grillDocsListNote builds the LLM-facing annotation for a merged docs
+// listing. Empty when the listing is complete: truncated marks that the server
+// reported more documents than were accumulated (page cap or a failed
+// follow-up page), degraded that at least one page was served with documents
+// temporarily unavailable, and pagingErr carries the error of a follow-up page
+// that failed after the first page succeeded.
+func grillDocsListNote(shown, total int, truncated, degraded bool, pagingErr string) string {
+	var notes []string
+	if truncated || shown < total {
+		if total < shown {
+			total = shown // defensive: never claim less than what is returned
+		}
+		notes = append(notes, fmt.Sprintf("Showing %d of %d documents.", shown, total))
+	}
+	if pagingErr != "" {
+		notes = append(notes, fmt.Sprintf("Fetching additional pages failed (%s); the list may be incomplete.", pagingErr))
+	}
+	if degraded {
+		notes = append(notes, "Some documents were temporarily unavailable when this list was generated; retry later for a complete listing.")
+	}
+	return strings.Join(notes, " ")
 }
 
 func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsListInput) (*mcp.CallToolResult, GrillDocsListOutput, error) {
@@ -663,27 +709,74 @@ func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsL
 
 	projectID := getProjectID(input.ProjectID)
 	c := grillClient(token)
-	body, st, err := grillListDocs(c, projectID)
-	if err != nil {
-		return errResult(), GrillDocsListOutput{Error: err.Error()}, nil
-	}
-	if authErr := interpretAuthError(ctx, input.Token, st, body, "grill docs list"); authErr != "" {
-		return errResult(), GrillDocsListOutput{Error: authErr}, nil
-	}
-	if st != http.StatusOK {
-		return errResult(), GrillDocsListOutput{Error: fmt.Sprintf("grill docs list: HTTP %d: %s", st, string(body))}, nil
+
+	fetchPage := func(cursor string) (grillDocsPage, string) {
+		var p grillDocsPage
+		body, st, err := grillListDocs(c, projectID, cursor)
+		if err != nil {
+			return p, err.Error()
+		}
+		if authErr := interpretAuthError(ctx, input.Token, st, body, "grill docs list"); authErr != "" {
+			return p, authErr
+		}
+		if st != http.StatusOK {
+			return p, fmt.Sprintf("grill docs list: HTTP %d: %s", st, string(body))
+		}
+		if err := json.Unmarshal(body, &p); err != nil {
+			return p, fmt.Sprintf("grill docs list: parse response: %v", err)
+		}
+		return p, ""
 	}
 
-	var out GrillDocsListOutput
-	if err := json.Unmarshal(body, &out); err != nil {
-		return errResult(), GrillDocsListOutput{Error: fmt.Sprintf("grill docs list: parse response: %v", err)}, nil
+	var (
+		docs      = []GrillDocInfo{}
+		namespace string
+		total     int
+		degraded  bool
+		truncated bool   // server reported more documents than were accumulated
+		pagingErr string // a follow-up page failed after the first page succeeded
+		cursor    string
+	)
+	for page := 0; page < grillDocsMaxPages; page++ {
+		p, errMsg := fetchPage(cursor)
+		if errMsg != "" {
+			if page == 0 {
+				return errResult(), GrillDocsListOutput{Error: errMsg}, nil
+			}
+			// Keep the pages already fetched; surface the gap in the note.
+			truncated = true
+			pagingErr = errMsg
+			break
+		}
+		docs = append(docs, p.Documents...)
+		if p.Namespace != "" {
+			namespace = p.Namespace
+		}
+		if p.TotalDocuments > 0 {
+			total = p.TotalDocuments
+		}
+		degraded = degraded || p.Degraded
+		truncated = p.HasMore
+		// Old API (fields absent), last page, or a cursor the loop cannot make
+		// progress with: stop.
+		if !p.HasMore || p.NextCursor == "" || p.NextCursor == cursor {
+			break
+		}
+		cursor = p.NextCursor
 	}
-	if out.Documents == nil {
-		out.Documents = []GrillDocInfo{}
+	if total == 0 {
+		total = len(docs) // pre-pagination API always sends total_documents == len(documents); keep len as the authoritative count
+	}
+
+	out := GrillDocsListOutput{
+		Documents:      docs,
+		Namespace:      namespace,
+		TotalDocuments: total,
+		Note:           grillDocsListNote(len(docs), total, truncated, degraded, pagingErr),
 	}
 	_, source := projectIDSource(input.ProjectID)
 	out.Scope = resolveScope(c, token, projectID, out.Namespace, source)
-	slog.Info("grill docs list", "count", out.TotalDocuments, "namespace", out.Namespace, "project", out.Scope.ProjectName)
+	slog.Info("grill docs list", "count", out.TotalDocuments, "returned", len(out.Documents), "namespace", out.Namespace, "project", out.Scope.ProjectName)
 	return nil, out, nil
 }
 

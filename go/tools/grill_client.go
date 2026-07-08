@@ -65,14 +65,19 @@ func doJSONWithProjectID(c *client.Client, method, endpoint string, body any, pr
 	return c.Do(method, endpoint, bytes.NewReader(b), headers)
 }
 
-// grillListDocs sends GET /grill/docs.
-// Placeholder for (*client.Client).GrillListDocs() ([]byte, int, error).
-func grillListDocs(c *client.Client, projectID string) ([]byte, int, error) {
+// grillListDocs sends GET /grill/docs, optionally passing a pagination cursor
+// (empty cursor = first page / legacy unpaged request).
+// Placeholder for (*client.Client).GrillListDocs(cursor string) ([]byte, int, error).
+func grillListDocs(c *client.Client, projectID, cursor string) ([]byte, int, error) {
 	var headers map[string]string
 	if projectID != "" {
 		headers = map[string]string{"X-Project-ID": projectID}
 	}
-	return c.Do(http.MethodGet, "/grill/docs", nil, headers)
+	endpoint := "/grill/docs"
+	if cursor != "" {
+		endpoint += "?cursor=" + url.QueryEscape(cursor)
+	}
+	return c.Do(http.MethodGet, endpoint, nil, headers)
 }
 
 // grillListProjects sends GET /projects (optionally filtered by product).

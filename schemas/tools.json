@@ -243,7 +243,7 @@
     },
     {
       "name": "grill_docs_list",
-      "description": "List documents currently ingested into POMA Grill for the authenticated project namespace. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.) — use grill_search to retrieve content. Pass a returned doc_id as doc_filter on grill_search to scope a query to a specific document.",
+      "description": "List documents currently ingested into POMA Grill for the authenticated project namespace. The tool follows server-side pagination internally and returns the complete merged list in one response; total_documents is the authoritative full count. If fewer documents than total_documents are returned (safety cap or temporarily unavailable documents), a note field explains the gap — surface it to the user. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.) — use grill_search to retrieve content. Pass a returned doc_id as doc_filter on grill_search to scope a query to a specific document.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -263,6 +263,7 @@
           "documents":       { "type": "array" },
           "namespace":       { "type": "string" },
           "total_documents": { "type": "integer" },
+          "note":            { "type": "string", "description": "Present only when the returned documents are fewer than total_documents (internal pagination cap reached, a follow-up page failed, or some documents were temporarily unavailable). Explains the gap." },
           "error":           { "type": "string" }
         }
       }
