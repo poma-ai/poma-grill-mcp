@@ -25,6 +25,31 @@ var projectIDSchema = &jsonschema.Schema{
 	Description: "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var.",
 }
 
+// errorCodeSchema documents the stable machine-readable error classification
+// emitted on every tool error. Shared across all output schemas so clients can
+// branch on `code` instead of string-matching the prose `error`.
+var errorCodeSchema = &jsonschema.Schema{
+	Type:        "string",
+	Description: "Stable machine-readable error classification, present only on errors. One of: missing_token, invalid_input, auth_expired, payment_required, project_protected, forbidden, too_many_jobs, upstream_error, transport_error, parse_error, job_failed, stream_error. Branch on this — never on the prose error string.",
+}
+
+// retryableSchema documents the retryable boolean shared across output schemas.
+var retryableSchema = &jsonschema.Schema{
+	Type:        "boolean",
+	Description: "True only for transient errors safe to retry: too_many_jobs, transport_error, stream_error, and 5xx upstream_error. When true, wait retry_after_seconds (if present) then retry the SAME call. Every other code is terminal — do NOT retry; fix the cause or abort.",
+}
+
+// retryAfterSchema documents the retry_after_seconds hint shared across output schemas.
+var retryAfterSchema = &jsonschema.Schema{
+	Type:        "integer",
+	Description: "Suggested seconds to wait before retrying when retryable is true (set for too_many_jobs backpressure).",
+}
+
+// errorHandlingGuidance is appended to every error-returning tool's description
+// so the calling LLM branches on the machine-readable `code`/`retryable` fields
+// rather than string-matching the prose `error`.
+const errorHandlingGuidance = " On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort."
+
 var grillIngestInputSchema = &jsonschema.Schema{
 	Type: "object",
 	Properties: map[string]*jsonschema.Schema{
@@ -55,8 +80,9 @@ var grillIngestOutputSchema = &jsonschema.Schema{
 		"events":              {Type: "array"},
 		"scope":               scopeSchema,
 		"error":               {Type: "string"},
-		"retryable":           {Type: "boolean", Description: "True when the error is transient job-capacity backpressure (too_many_jobs): the ingest did not happen; retry the same call after retry_after_seconds and pause new ingests until capacity frees."},
-		"retry_after_seconds": {Type: "integer", Description: "Suggested seconds to wait before retrying when retryable is true."},
+		"code":                errorCodeSchema,
+		"retryable":           retryableSchema,
+		"retry_after_seconds": retryAfterSchema,
 	},
 }
 
@@ -69,7 +95,7 @@ var grillIngestTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop.",
+	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop." + errorHandlingGuidance,
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -81,7 +107,7 @@ var grillIngestSyncTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees.",
+	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees." + errorHandlingGuidance,
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -95,12 +121,11 @@ type GrillIngestInput struct {
 }
 
 type GrillIngestOutput struct {
-	JobID             string          `json:"job_id,omitempty"`
-	Events            []jobStatusFull `json:"events,omitempty"`
-	Scope             *GrillScope     `json:"scope,omitempty"`
-	Error             string          `json:"error,omitempty"`
-	Retryable         bool            `json:"retryable,omitempty"`
-	RetryAfterSeconds int             `json:"retry_after_seconds,omitempty"`
+	JobID  string          `json:"job_id,omitempty"`
+	Events []jobStatusFull `json:"events,omitempty"`
+	Scope  *GrillScope     `json:"scope,omitempty"`
+	// GrillError promotes error, code, retryable, retry_after_seconds to the top level.
+	GrillError
 }
 
 func GrillIngest(ctx context.Context, req *mcp.CallToolRequest, input GrillIngestInput) (*mcp.CallToolResult, GrillIngestOutput, error) {
@@ -114,11 +139,12 @@ func GrillIngestSync(ctx context.Context, req *mcp.CallToolRequest, input GrillI
 func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input GrillIngestInput, waitTerminal bool) (*mcp.CallToolResult, GrillIngestOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillIngestOutput{Error: "token is required (provide token or set POMA_API_KEY on the server)"}, nil
+		return errResult(), GrillIngestOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
 	}
 	data, filename, err := resolveGrillIngestPayload(input)
 	if err != nil {
-		return errResult(), GrillIngestOutput{Error: err.Error()}, nil
+		// Payload build / arg validation failure — bad input, not transport.
+		return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "%s", err.Error())}, nil
 	}
 
 	projectID := getProjectID(input.ProjectID)
@@ -127,21 +153,22 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 
 	body, st, err := grillIngestData(c, data, filename, projectID)
 	if err != nil {
-		return errResult(), GrillIngestOutput{Error: err.Error()}, nil
+		// Network/client error reaching the Grill API — transient, retryable.
+		return errResult(), GrillIngestOutput{GrillError: GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)}}, nil
 	}
-	if authErr := interpretAuthError(ctx, input.Token, st, body, "grill ingest"); authErr != "" {
-		return errResult(), GrillIngestOutput{Error: authErr}, nil
+	if authErr, authCode := interpretAuthError(ctx, input.Token, st, body, "grill ingest"); authErr != "" {
+		return errResult(), GrillIngestOutput{GrillError: errOut(authCode, "%s", authErr)}, nil
 	}
 	if throttle, retryAfter, ok := interpretTooManyJobs(st, body); ok {
-		return errResult(), GrillIngestOutput{Error: throttle, Retryable: true, RetryAfterSeconds: retryAfter}, nil
+		return errResult(), GrillIngestOutput{GrillError: GrillError{Error: throttle, Code: CodeTooManyJobs, Retryable: isRetryableCode(CodeTooManyJobs, 0), RetryAfterSeconds: retryAfter}}, nil
 	}
 	if st != http.StatusCreated {
-		return errResult(), GrillIngestOutput{Error: fmt.Sprintf("grill ingest: HTTP %d: %s", st, string(body))}, nil
+		return errResult(), GrillIngestOutput{GrillError: GrillError{Error: fmt.Sprintf("grill ingest: HTTP %d: %s", st, string(body)), Code: CodeUpstreamError, Retryable: isRetryableCode(CodeUpstreamError, st)}}, nil
 	}
 
 	j, err := client.ParseJob(body)
 	if err != nil || j.JobID == "" {
-		return errResult(), GrillIngestOutput{Error: fmt.Sprintf("grill ingest: could not parse job_id from response: %s", string(body))}, nil
+		return errResult(), GrillIngestOutput{GrillError: errOut(CodeParseError, "grill ingest: could not parse job_id from response: %s", string(body))}, nil
 	}
 	slog.Info("grill ingest job_id", "job_id", j.JobID)
 
@@ -161,7 +188,7 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 	})
 	if streamErr != nil {
 		slog.Error("grill ingest status stream failed", "job_id", j.JobID, "err", streamErr)
-		return errResult(), GrillIngestOutput{JobID: j.JobID, Events: events, Error: fmt.Sprintf("status stream failed: %v", streamErr)}, nil
+		return errResult(), GrillIngestOutput{JobID: j.JobID, Events: events, GrillError: GrillError{Error: fmt.Sprintf("status stream failed: %v", streamErr), Code: CodeStreamError, Retryable: isRetryableCode(CodeStreamError, 0)}}, nil
 	}
 	if len(events) > 0 {
 		last := events[len(events)-1]
@@ -171,7 +198,7 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 				msg = "job failed: " + last.Error
 			}
 			slog.Error("grill ingest job failed", "job_id", j.JobID)
-			return errResult(), GrillIngestOutput{JobID: j.JobID, Events: events, Error: msg}, nil
+			return errResult(), GrillIngestOutput{JobID: j.JobID, Events: events, GrillError: errOut(CodeJobFailed, "%s", msg)}, nil
 		}
 	}
 	slog.Info("grill ingest done", "job_id", j.JobID)
@@ -204,7 +231,7 @@ var grillIngestResumeTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "Resume tracking an in-progress POMA Grill ingestion job started by an earlier grill_ingest call. Connects to the status SSE stream for the given job_id and waits until a terminal state (done, failed, grilled, deleted), emitting progress notifications.",
+	Description:  "Resume tracking an in-progress POMA Grill ingestion job started by an earlier grill_ingest call. Connects to the status SSE stream for the given job_id and waits until a terminal state (done, failed, grilled, deleted), emitting progress notifications." + errorHandlingGuidance,
 	InputSchema:  grillIngestResumeInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -217,10 +244,10 @@ type GrillIngestResumeInput struct {
 func GrillIngestResume(ctx context.Context, req *mcp.CallToolRequest, input GrillIngestResumeInput) (*mcp.CallToolResult, GrillIngestOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillIngestOutput{Error: "token is required (provide token or set POMA_API_KEY on the server)"}, nil
+		return errResult(), GrillIngestOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
 	}
 	if input.JobID == "" {
-		return errResult(), GrillIngestOutput{Error: "job_id is required"}, nil
+		return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "job_id is required")}, nil
 	}
 
 	c := grillClient(token)
@@ -234,7 +261,7 @@ func GrillIngestResume(ctx context.Context, req *mcp.CallToolRequest, input Gril
 	})
 	if streamErr != nil {
 		slog.Error("grill ingest resume status stream failed", "job_id", input.JobID, "err", streamErr)
-		return errResult(), GrillIngestOutput{JobID: input.JobID, Events: events, Error: fmt.Sprintf("status stream failed: %v", streamErr)}, nil
+		return errResult(), GrillIngestOutput{JobID: input.JobID, Events: events, GrillError: GrillError{Error: fmt.Sprintf("status stream failed: %v", streamErr), Code: CodeStreamError, Retryable: isRetryableCode(CodeStreamError, 0)}}, nil
 	}
 	if len(events) > 0 {
 		last := events[len(events)-1]
@@ -244,7 +271,7 @@ func GrillIngestResume(ctx context.Context, req *mcp.CallToolRequest, input Gril
 				msg = "job failed: " + last.Error
 			}
 			slog.Error("grill ingest resume job failed", "job_id", input.JobID)
-			return errResult(), GrillIngestOutput{JobID: input.JobID, Events: events, Error: msg}, nil
+			return errResult(), GrillIngestOutput{JobID: input.JobID, Events: events, GrillError: errOut(CodeJobFailed, "%s", msg)}, nil
 		}
 	}
 	slog.Info("grill ingest resume done", "job_id", input.JobID)
@@ -289,10 +316,13 @@ var grillSearchInputSchema = &jsonschema.Schema{
 var grillSearchOutputSchema = &jsonschema.Schema{
 	Type: "object",
 	Properties: map[string]*jsonschema.Schema{
-		"context": {Type: "string", Description: "Concatenated chunk text for RAG prompting."},
-		"assets":  {Type: "object", Description: "Per-doc figures/tables when return_assets=true, keyed by doc_id. Images are base64 data URIs. Omitted when none."},
-		"scope":   scopeSchema,
-		"error":   {Type: "string"},
+		"context":             {Type: "string", Description: "Concatenated chunk text for RAG prompting."},
+		"assets":              {Type: "object", Description: "Per-doc figures/tables when return_assets=true, keyed by doc_id. Images are base64 data URIs. Omitted when none."},
+		"scope":               scopeSchema,
+		"error":               {Type: "string"},
+		"code":                errorCodeSchema,
+		"retryable":           retryableSchema,
+		"retry_after_seconds": retryAfterSchema,
 	},
 }
 
@@ -303,7 +333,7 @@ var grillSearchTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id, which equals the job_id from grill_ingest); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k. The response includes a `scope` object identifying which project was searched — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results.",
+	Description:  "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id, which equals the job_id from grill_ingest); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k. The response includes a `scope` object identifying which project was searched — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results." + errorHandlingGuidance,
 	InputSchema:  grillSearchInputSchema,
 	OutputSchema: grillSearchOutputSchema,
 }
@@ -328,16 +358,17 @@ type GrillSearchOutput struct {
 	// omitempty collapses it to absent, so both variants simply drop it.
 	Assets map[string]any `json:"assets,omitzero"`
 	Scope  *GrillScope    `json:"scope,omitempty"`
-	Error  string         `json:"error,omitempty"`
+	// GrillError promotes error, code, retryable, retry_after_seconds to the top level.
+	GrillError
 }
 
 func GrillSearch(ctx context.Context, _ *mcp.CallToolRequest, input GrillSearchInput) (*mcp.CallToolResult, GrillSearchOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillSearchOutput{Error: "token is required (provide token or set POMA_API_KEY on the server)"}, nil
+		return errResult(), GrillSearchOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
 	}
 	if input.Query == "" {
-		return errResult(), GrillSearchOutput{Error: "query is required"}, nil
+		return errResult(), GrillSearchOutput{GrillError: errOut(CodeInvalidInput, "query is required")}, nil
 	}
 
 	projectID := getProjectID(input.ProjectID)
@@ -364,13 +395,14 @@ func GrillSearch(ctx context.Context, _ *mcp.CallToolRequest, input GrillSearchI
 		}, projectID)
 	}
 	if err != nil {
-		return errResult(), GrillSearchOutput{Error: err.Error()}, nil
+		// Network/client error reaching the Grill API — transient, retryable.
+		return errResult(), GrillSearchOutput{GrillError: GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)}}, nil
 	}
-	if authErr := interpretAuthError(ctx, input.Token, st, respBody, "grill search"); authErr != "" {
-		return errResult(), GrillSearchOutput{Error: authErr}, nil
+	if authErr, authCode := interpretAuthError(ctx, input.Token, st, respBody, "grill search"); authErr != "" {
+		return errResult(), GrillSearchOutput{GrillError: errOut(authCode, "%s", authErr)}, nil
 	}
 	if st != http.StatusOK {
-		return errResult(), GrillSearchOutput{Error: fmt.Sprintf("grill search: HTTP %d: %s", st, string(respBody))}, nil
+		return errResult(), GrillSearchOutput{GrillError: GrillError{Error: fmt.Sprintf("grill search: HTTP %d: %s", st, string(respBody)), Code: CodeUpstreamError, Retryable: isRetryableCode(CodeUpstreamError, st)}}, nil
 	}
 
 	var result struct {
@@ -378,7 +410,7 @@ func GrillSearch(ctx context.Context, _ *mcp.CallToolRequest, input GrillSearchI
 		Assets  map[string]any `json:"assets"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return errResult(), GrillSearchOutput{Error: fmt.Sprintf("grill search: parse response: %v", err)}, nil
+		return errResult(), GrillSearchOutput{GrillError: errOut(CodeParseError, "grill search: parse response: %v", err)}, nil
 	}
 	_, source := projectIDSource(input.ProjectID)
 	scope := resolveScope(c, token, projectID, "", source)
@@ -615,8 +647,11 @@ var grillDocsListOutputSchema = &jsonschema.Schema{
 			Type:        "string",
 			Description: "Present only when the returned documents are fewer than total_documents (internal pagination cap reached, a follow-up page failed, or some documents were temporarily unavailable). Explains the gap.",
 		},
-		"scope": scopeSchema,
-		"error": {Type: "string"},
+		"scope":               scopeSchema,
+		"error":               {Type: "string"},
+		"code":                errorCodeSchema,
+		"retryable":           retryableSchema,
+		"retry_after_seconds": retryAfterSchema,
 	},
 }
 
@@ -627,7 +662,7 @@ var grillDocsListTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "List documents currently ingested into POMA Grill for the authenticated project namespace. The tool follows server-side pagination internally and returns the complete merged list in one response; `total_documents` is the authoritative full count. If fewer documents than total_documents are returned (safety cap or temporarily unavailable documents), a `note` field explains the gap — surface it to the user. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.); document content is retrieved via grill_search. A returned doc_id serves as the doc_filter on grill_search to scope a query to a specific document. The response includes a `scope` object identifying which project these documents belong to — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting the list.",
+	Description:  "List documents currently ingested into POMA Grill for the authenticated project namespace. The tool follows server-side pagination internally and returns the complete merged list in one response; `total_documents` is the authoritative full count. If fewer documents than total_documents are returned (safety cap or temporarily unavailable documents), a `note` field explains the gap — surface it to the user. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.); document content is retrieved via grill_search. A returned doc_id serves as the doc_filter on grill_search to scope a query to a specific document. The response includes a `scope` object identifying which project these documents belong to — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting the list." + errorHandlingGuidance,
 	InputSchema:  grillDocsListInputSchema,
 	OutputSchema: grillDocsListOutputSchema,
 }
@@ -657,7 +692,8 @@ type GrillDocsListOutput struct {
 	TotalDocuments int            `json:"total_documents"`
 	Note           string         `json:"note,omitempty"`
 	Scope          *GrillScope    `json:"scope,omitempty"`
-	Error          string         `json:"error,omitempty"`
+	// GrillError promotes error, code, retryable, retry_after_seconds to the top level.
+	GrillError
 }
 
 // grillDocsMaxPages caps transparent auto-paging: the tool follows next_cursor
@@ -704,31 +740,35 @@ func grillDocsListNote(shown, total int, truncated, degraded bool, pagingErr str
 func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsListInput) (*mcp.CallToolResult, GrillDocsListOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillDocsListOutput{Error: "token is required (provide token or set POMA_API_KEY on the server)"}, nil
+		return errResult(), GrillDocsListOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
 	}
 
 	projectID := getProjectID(input.ProjectID)
 	c := grillClient(token)
-
-	// fetchPage returns the parsed page, an error message (empty on success),
+	// fetchPage returns the parsed page, a structured error (nil on success),
 	// and whether that error is an auth/billing failure — which is fatal, not a
-	// transient paging hiccup, and must abort the whole call.
-	fetchPage := func(cursor string) (grillDocsPage, string, bool) {
+	// transient paging hiccup, and must abort the whole call even mid-loop.
+	fetchPage := func(cursor string) (grillDocsPage, *GrillError, bool) {
 		var p grillDocsPage
 		body, st, err := grillListDocs(c, projectID, cursor)
 		if err != nil {
-			return p, err.Error(), false
+			// Network/client error reaching the Grill API — transient, retryable.
+			ge := GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)}
+			return p, &ge, false
 		}
-		if authErr := interpretAuthError(ctx, input.Token, st, body, "grill docs list"); authErr != "" {
-			return p, authErr, true
+		if authErr, authCode := interpretAuthError(ctx, input.Token, st, body, "grill docs list"); authErr != "" {
+			ge := errOut(authCode, "%s", authErr)
+			return p, &ge, true
 		}
 		if st != http.StatusOK {
-			return p, fmt.Sprintf("grill docs list: HTTP %d: %s", st, string(body)), false
+			ge := GrillError{Error: fmt.Sprintf("grill docs list: HTTP %d: %s", st, string(body)), Code: CodeUpstreamError, Retryable: isRetryableCode(CodeUpstreamError, st)}
+			return p, &ge, false
 		}
 		if err := json.Unmarshal(body, &p); err != nil {
-			return p, fmt.Sprintf("grill docs list: parse response: %v", err), false
+			ge := errOut(CodeParseError, "grill docs list: parse response: %v", err)
+			return p, &ge, false
 		}
-		return p, "", false
+		return p, nil, false
 	}
 
 	var (
@@ -741,18 +781,18 @@ func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsL
 		cursor    string
 	)
 	for page := 0; page < grillDocsMaxPages; page++ {
-		p, errMsg, isAuthErr := fetchPage(cursor)
-		if errMsg != "" {
+		p, ferr, isAuthErr := fetchPage(cursor)
+		if ferr != nil {
 			// An auth/billing failure is not transient: the credential is bad,
 			// expired, or forbidden and every further page would fail the same
-			// way. Surface the actionable message as a hard error on any page,
-			// rather than burying it in a note.
+			// way. Surface the actionable structured error as a hard error on any
+			// page, rather than burying it in a note.
 			if page == 0 || isAuthErr {
-				return errResult(), GrillDocsListOutput{Error: errMsg}, nil
+				return errResult(), GrillDocsListOutput{GrillError: *ferr}, nil
 			}
 			// Keep the pages already fetched; surface the gap in the note.
 			truncated = true
-			pagingErr = errMsg
+			pagingErr = ferr.Error
 			break
 		}
 		docs = append(docs, p.Documents...)
@@ -819,6 +859,9 @@ var grillIngestBatchOutputSchema = &jsonschema.Schema{
 		"quota_exceeded_count": {Type: "integer"},
 		"scope":                scopeSchema,
 		"error":                {Type: "string"},
+		"code":                 errorCodeSchema,
+		"retryable":            retryableSchema,
+		"retry_after_seconds":  retryAfterSchema,
 	},
 }
 
@@ -829,7 +872,7 @@ var grillIngestBatchTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(false),
 	},
-	Description:  "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing; progress is reported by grill_jobs_status. The response includes a `scope` object identifying which project the documents were ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Free-tier accounts should set concurrency to 1. When the account is at its concurrent-job capacity the API returns HTTP 429 too_many_jobs; those files come back with quota_exceed=true (counted in quota_exceeded_count) — they were NOT ingested. Retry only the quota_exceed files once running jobs finish (poll grill_jobs_status); lower concurrency if it recurs.",
+	Description:  "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing; progress is reported by grill_jobs_status. The response includes a `scope` object identifying which project the documents were ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Free-tier accounts should set concurrency to 1. When the account is at its concurrent-job capacity the API returns HTTP 429 too_many_jobs; those files come back with quota_exceed=true (counted in quota_exceeded_count) — they were NOT ingested. Retry only the quota_exceed files once running jobs finish (poll grill_jobs_status); lower concurrency if it recurs." + errorHandlingGuidance,
 	InputSchema:  grillIngestBatchInputSchema,
 	OutputSchema: grillIngestBatchOutputSchema,
 }
@@ -842,10 +885,11 @@ type GrillIngestBatchInput struct {
 }
 
 type GrillIngestBatchResult struct {
-	FilePath    string `json:"file_path"`
-	JobID       string `json:"job_id,omitempty"`
-	Error       string `json:"error,omitempty"`
-	QuotaExceed bool   `json:"quota_exceed,omitempty"`
+	FilePath string `json:"file_path"`
+	JobID    string `json:"job_id,omitempty"`
+	// GrillError promotes error, code, retryable, retry_after_seconds to the top level.
+	GrillError
+	QuotaExceed bool `json:"quota_exceed,omitempty"`
 }
 
 type GrillIngestBatchOutput struct {
@@ -854,19 +898,20 @@ type GrillIngestBatchOutput struct {
 	FailedCount        int                      `json:"failed_count"`
 	QuotaExceededCount int                      `json:"quota_exceeded_count"`
 	Scope              *GrillScope              `json:"scope,omitempty"`
-	Error              string                   `json:"error,omitempty"`
+	// GrillError promotes error, code, retryable, retry_after_seconds to the top level.
+	GrillError
 }
 
 func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIngestBatchInput) (*mcp.CallToolResult, GrillIngestBatchOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillIngestBatchOutput{Error: "token is required (provide token or set POMA_API_KEY on the server)"}, nil
+		return errResult(), GrillIngestBatchOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
 	}
 	if len(input.FilePaths) == 0 {
-		return errResult(), GrillIngestBatchOutput{Error: "file_paths is required"}, nil
+		return errResult(), GrillIngestBatchOutput{GrillError: errOut(CodeInvalidInput, "file_paths is required")}, nil
 	}
 	if len(input.FilePaths) > 50 {
-		return errResult(), GrillIngestBatchOutput{Error: "file_paths exceeds limit of 50"}, nil
+		return errResult(), GrillIngestBatchOutput{GrillError: errOut(CodeInvalidInput, "file_paths exceeds limit of 50")}, nil
 	}
 
 	concurrency := input.Concurrency
@@ -892,38 +937,40 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 
 			data, filename, err := resolveGrillIngestPayload(GrillIngestInput{FilePath: fp})
 			if err != nil {
-				results[i] = GrillIngestBatchResult{FilePath: fp, Error: err.Error()}
+				// Payload build / arg validation failure — bad input, not transport.
+				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: errOut(CodeInvalidInput, "%s", err.Error())}
 				return
 			}
 
 			body, st, err := grillIngestData(c, data, filename, projectID)
 			if err != nil {
-				results[i] = GrillIngestBatchResult{FilePath: fp, Error: err.Error()}
+				// Network/client error reaching the Grill API — transient, retryable.
+				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)}}
 				return
 			}
-			if authErr := interpretAuthError(ctx, input.Token, st, body, "grill ingest"); authErr != "" {
-				results[i] = GrillIngestBatchResult{FilePath: fp, Error: authErr}
+			if authErr, authCode := interpretAuthError(ctx, input.Token, st, body, "grill ingest"); authErr != "" {
+				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: errOut(authCode, "%s", authErr)}
 				return
 			}
-			if throttle, _, ok := interpretTooManyJobs(st, body); ok {
+			if throttle, retryAfter, ok := interpretTooManyJobs(st, body); ok {
 				// Job-capacity backpressure (HTTP 429 too_many_jobs). Transient —
 				// bucket as quota_exceed so the caller retries once slots free.
-				results[i] = GrillIngestBatchResult{FilePath: fp, Error: throttle, QuotaExceed: true}
+				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: GrillError{Error: throttle, Code: CodeTooManyJobs, Retryable: isRetryableCode(CodeTooManyJobs, 0), RetryAfterSeconds: retryAfter}, QuotaExceed: true}
 				return
 			}
 			if st == http.StatusForbidden {
 				// interpretAuthError returned "" — legacy quota/capacity 403 (older API), not auth.
-				results[i] = GrillIngestBatchResult{FilePath: fp, Error: fmt.Sprintf("quota exceeded: %s", string(body)), QuotaExceed: true}
+				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: GrillError{Error: fmt.Sprintf("quota exceeded: %s", string(body)), Code: CodeTooManyJobs, Retryable: isRetryableCode(CodeTooManyJobs, 0)}, QuotaExceed: true}
 				return
 			}
 			if st != http.StatusCreated {
-				results[i] = GrillIngestBatchResult{FilePath: fp, Error: fmt.Sprintf("HTTP %d: %s", st, string(body))}
+				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: GrillError{Error: fmt.Sprintf("HTTP %d: %s", st, string(body)), Code: CodeUpstreamError, Retryable: isRetryableCode(CodeUpstreamError, st)}}
 				return
 			}
 
 			j, err := client.ParseJob(body)
 			if err != nil || j.JobID == "" {
-				results[i] = GrillIngestBatchResult{FilePath: fp, Error: "could not parse job_id: " + string(body)}
+				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: errOut(CodeParseError, "could not parse job_id: %s", string(body))}
 				return
 			}
 
@@ -952,7 +999,16 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 		QuotaExceededCount: quotaExceededCount,
 	}
 	if submittedCount == 0 && quotaExceededCount == 0 {
+		// Aggregate rollup: every file failed. The authoritative per-file
+		// classification lives on each results[i].Code; every result in this
+		// branch is a failure (neither submitted nor quota_exceed), so
+		// results[0].Code is guaranteed non-empty. Use it as the representative
+		// top-level code/retryable so this error site isn't the one place in the
+		// tool that leaves `code` empty.
 		out.Error = fmt.Sprintf("all %d file(s) failed to submit", len(results))
+		out.Code = results[0].Code
+		out.Retryable = results[0].Retryable
+		out.RetryAfterSeconds = results[0].RetryAfterSeconds
 		return errResult(), out, nil
 	}
 	_, source := projectIDSource(input.ProjectID)
@@ -981,11 +1037,14 @@ var grillJobsStatusInputSchema = &jsonschema.Schema{
 var grillJobsStatusOutputSchema = &jsonschema.Schema{
 	Type: "object",
 	Properties: map[string]*jsonschema.Schema{
-		"results":       {Type: "array"},
-		"pending_count": {Type: "integer"},
-		"done_count":    {Type: "integer"},
-		"failed_count":  {Type: "integer"},
-		"error":         {Type: "string"},
+		"results":             {Type: "array"},
+		"pending_count":       {Type: "integer"},
+		"done_count":          {Type: "integer"},
+		"failed_count":        {Type: "integer"},
+		"error":               {Type: "string"},
+		"code":                errorCodeSchema,
+		"retryable":           retryableSchema,
+		"retry_after_seconds": retryAfterSchema,
 	},
 }
 
@@ -996,7 +1055,7 @@ var grillJobsStatusTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming — reporting progress for jobs created by grill_ingest or grill_ingest_batch. pending_count/done_count/failed_count give a quick summary.",
+	Description:  "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming — reporting progress for jobs created by grill_ingest or grill_ingest_batch. pending_count/done_count/failed_count give a quick summary." + errorHandlingGuidance,
 	InputSchema:  grillJobsStatusInputSchema,
 	OutputSchema: grillJobsStatusOutputSchema,
 }
@@ -1010,7 +1069,8 @@ type GrillJobStatusResult struct {
 	JobID      string `json:"job_id"`
 	Status     string `json:"status,omitempty"`
 	IsTerminal bool   `json:"is_terminal"`
-	Error      string `json:"error,omitempty"`
+	// GrillError promotes error, code, retryable, retry_after_seconds to the top level.
+	GrillError
 }
 
 type GrillJobsStatusOutput struct {
@@ -1018,19 +1078,20 @@ type GrillJobsStatusOutput struct {
 	PendingCount int                    `json:"pending_count"`
 	DoneCount    int                    `json:"done_count"`
 	FailedCount  int                    `json:"failed_count"`
-	Error        string                 `json:"error,omitempty"`
+	// GrillError promotes error, code, retryable, retry_after_seconds to the top level.
+	GrillError
 }
 
 func GrillJobsStatus(ctx context.Context, _ *mcp.CallToolRequest, input GrillJobsStatusInput) (*mcp.CallToolResult, GrillJobsStatusOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillJobsStatusOutput{Error: "token is required (provide token or set POMA_API_KEY on the server)"}, nil
+		return errResult(), GrillJobsStatusOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
 	}
 	if len(input.JobIDs) == 0 {
-		return errResult(), GrillJobsStatusOutput{Error: "job_ids is required"}, nil
+		return errResult(), GrillJobsStatusOutput{GrillError: errOut(CodeInvalidInput, "job_ids is required")}, nil
 	}
 	if len(input.JobIDs) > 50 {
-		return errResult(), GrillJobsStatusOutput{Error: "job_ids exceeds limit of 50"}, nil
+		return errResult(), GrillJobsStatusOutput{GrillError: errOut(CodeInvalidInput, "job_ids exceeds limit of 50")}, nil
 	}
 
 	results := make([]GrillJobStatusResult, len(input.JobIDs))
@@ -1045,13 +1106,31 @@ func GrillJobsStatus(ctx context.Context, _ *mcp.CallToolRequest, input GrillJob
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			s, err := peekJobStatus(ctx, c, id)
+			s, httpStatus, err := peekJobStatus(ctx, c, id)
 			if err != nil {
-				results[i] = GrillJobStatusResult{JobID: id, Error: err.Error()}
+				switch {
+				case httpStatus == 0:
+					// Request build failure or network/client error — transient, retryable.
+					results[i] = GrillJobStatusResult{JobID: id, GrillError: GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)}}
+				case httpStatus == http.StatusOK:
+					// 200 but the body didn't parse — not a transport issue.
+					results[i] = GrillJobStatusResult{JobID: id, GrillError: errOut(CodeParseError, "%s", err.Error())}
+				default:
+					// Non-2xx from the status endpoint — classify like every other
+					// upstream call: retryable only at 5xx. A permanent 4xx (e.g. job
+					// not found) must NOT be reported as a transient transport_error.
+					results[i] = GrillJobStatusResult{JobID: id, GrillError: GrillError{Error: err.Error(), Code: CodeUpstreamError, Retryable: isRetryableCode(CodeUpstreamError, httpStatus)}}
+				}
 				return
 			}
 			terminal := s.IsTerminal || isTerminalGrillStatus(s.Status)
-			results[i] = GrillJobStatusResult{JobID: id, Status: s.Status, IsTerminal: terminal, Error: s.Error}
+			res := GrillJobStatusResult{JobID: id, Status: s.Status, IsTerminal: terminal, GrillError: GrillError{Error: s.Error}}
+			if res.Status == "failed" || res.Error != "" {
+				// Terminal job failure (or an error surfaced on a non-terminal status)
+				// — not retryable; fix the source doc.
+				res.Code = CodeJobFailed
+			}
+			results[i] = res
 		}(i, id)
 	}
 	wg.Wait()
@@ -1096,8 +1175,11 @@ var grillProjectsInputSchema = &jsonschema.Schema{
 var grillProjectsOutputSchema = &jsonschema.Schema{
 	Type: "object",
 	Properties: map[string]*jsonschema.Schema{
-		"projects": {Type: "string", Description: "Human-readable list of accessible projects with IDs, names, products, and protection status."},
-		"error":    {Type: "string"},
+		"projects":            {Type: "string", Description: "Human-readable list of accessible projects with IDs, names, products, and protection status."},
+		"error":               {Type: "string"},
+		"code":                errorCodeSchema,
+		"retryable":           retryableSchema,
+		"retry_after_seconds": retryAfterSchema,
 	},
 }
 
@@ -1108,7 +1190,7 @@ var grillProjectsTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(false),
 	},
-	Description:  "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools.",
+	Description:  "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools." + errorHandlingGuidance,
 	InputSchema:  grillProjectsInputSchema,
 	OutputSchema: grillProjectsOutputSchema,
 }
@@ -1120,7 +1202,8 @@ type GrillProjectsInput struct {
 
 type GrillProjectsOutput struct {
 	Projects string `json:"projects,omitempty"`
-	Error    string `json:"error,omitempty"`
+	// GrillError promotes error, code, retryable, retry_after_seconds to the top level.
+	GrillError
 }
 
 type grillProject struct {
@@ -1153,24 +1236,25 @@ func parseProjects(body []byte) ([]grillProject, error) {
 func GrillProjects(ctx context.Context, _ *mcp.CallToolRequest, input GrillProjectsInput) (*mcp.CallToolResult, GrillProjectsOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillProjectsOutput{Error: "token is required (provide token or set POMA_API_KEY on the server)"}, nil
+		return errResult(), GrillProjectsOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
 	}
 
 	c := grillClient(token)
 	body, st, err := grillListProjects(c, input.Product)
 	if err != nil {
-		return errResult(), GrillProjectsOutput{Error: err.Error()}, nil
+		// Network/client error reaching the Grill API — transient, retryable.
+		return errResult(), GrillProjectsOutput{GrillError: GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)}}, nil
 	}
-	if authErr := interpretAuthError(ctx, input.Token, st, body, "grill projects"); authErr != "" {
-		return errResult(), GrillProjectsOutput{Error: authErr}, nil
+	if authErr, authCode := interpretAuthError(ctx, input.Token, st, body, "grill projects"); authErr != "" {
+		return errResult(), GrillProjectsOutput{GrillError: errOut(authCode, "%s", authErr)}, nil
 	}
 	if st != http.StatusOK {
-		return errResult(), GrillProjectsOutput{Error: fmt.Sprintf("grill projects: HTTP %d: %s", st, string(body))}, nil
+		return errResult(), GrillProjectsOutput{GrillError: GrillError{Error: fmt.Sprintf("grill projects: HTTP %d: %s", st, string(body)), Code: CodeUpstreamError, Retryable: isRetryableCode(CodeUpstreamError, st)}}, nil
 	}
 
 	projects, err := parseProjects(body)
 	if err != nil {
-		return errResult(), GrillProjectsOutput{Error: fmt.Sprintf("grill projects: parse response: %v", err)}, nil
+		return errResult(), GrillProjectsOutput{GrillError: errOut(CodeParseError, "grill projects: parse response: %v", err)}, nil
 	}
 
 	if len(projects) == 0 {
