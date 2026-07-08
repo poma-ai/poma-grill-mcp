@@ -101,29 +101,35 @@ func streamJobStatus(ctx context.Context, c *client.Client, jobID, statusBaseURL
 }
 
 // peekJobStatus fetches a single status snapshot for the given job (non-streaming).
-func peekJobStatus(ctx context.Context, c *client.Client, jobID string) (*jobStatusFull, error) {
+// The returned int is the upstream HTTP status code, or 0 when err originates
+// before/without an HTTP response (request build failure or network/client
+// error) — callers need this to classify the error correctly: 0 is a transport
+// error, a non-2xx status is an upstream error, and 200 with a non-nil err is a
+// parse error. Collapsing all three into one error kind would misclassify a
+// permanent 4xx (e.g. job not found) as a transient transport error.
+func peekJobStatus(ctx context.Context, c *client.Client, jobID string) (*jobStatusFull, int, error) {
 	url := strings.TrimSuffix(apiBaseURL(), "/") + "/jobs/" + client.JobPathSegment(jobID) + "/status"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("job status: HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, resp.StatusCode, fmt.Errorf("job status: HTTP %d: %s", resp.StatusCode, string(body))
 	}
 	var s jobStatusFull
 	if err := json.Unmarshal(body, &s); err != nil {
-		return nil, err
+		return nil, resp.StatusCode, err
 	}
-	return &s, nil
+	return &s, resp.StatusCode, nil
 }
 
 // isTerminalGrillStatus returns true for status values that indicate a job has

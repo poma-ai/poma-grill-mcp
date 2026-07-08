@@ -61,6 +61,62 @@ func errResult() *mcp.CallToolResult {
 	return &mcp.CallToolResult{IsError: true}
 }
 
+// Stable machine-readable error codes emitted alongside the human-readable
+// error string on every grill tool error. Clients branch on these (and on
+// Retryable), never on the prose message. See GrillError.
+const (
+	CodeMissingToken     = "missing_token"
+	CodeInvalidInput     = "invalid_input"
+	CodeAuthExpired      = "auth_expired"
+	CodePaymentRequired  = "payment_required"
+	CodeProjectProtected = "project_protected"
+	CodeForbidden        = "forbidden"
+	CodeTooManyJobs      = "too_many_jobs"
+	CodeUpstreamError    = "upstream_error"
+	CodeTransportError   = "transport_error"
+	CodeParseError       = "parse_error"
+	CodeJobFailed        = "job_failed"
+	CodeStreamError      = "stream_error"
+)
+
+// GrillError is the shared, embeddable error envelope for every grill tool
+// output. It is embedded anonymously into each output struct so its fields are
+// promoted to the top level of the JSON output: the `error` key is byte-for-byte
+// unchanged from before this envelope existed, and `code`/`retryable`/
+// `retry_after_seconds` are purely additive (all omitempty). A machine-readable
+// Code accompanies every error so clients can branch on it instead of
+// string-matching the prose Error. Retryable is true only for transient codes
+// (too_many_jobs, transport_error, stream_error, and 5xx upstream_error).
+type GrillError struct {
+	Error             string `json:"error,omitempty"`
+	Code              string `json:"code,omitempty"`
+	Retryable         bool   `json:"retryable,omitempty"`
+	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
+}
+
+// errOut builds a GrillError with a code and a formatted message. Retryable is
+// left false; call sites that need it (too_many_jobs, transport_error,
+// stream_error, 5xx upstream_error) set it explicitly.
+func errOut(code, format string, args ...any) GrillError {
+	return GrillError{Error: fmt.Sprintf(format, args...), Code: code}
+}
+
+// isRetryableCode is the single source of truth for the taxonomy's retry
+// contract: true only for too_many_jobs, transport_error, stream_error, and
+// upstream_error when httpStatus is 5xx. Pass httpStatus 0 for codes that
+// don't depend on it. Every call site that sets GrillError.Retryable derives
+// it from this function so the contract can't drift out of sync per-site.
+func isRetryableCode(code string, httpStatus int) bool {
+	switch code {
+	case CodeTooManyJobs, CodeTransportError, CodeStreamError:
+		return true
+	case CodeUpstreamError:
+		return httpStatus >= 500
+	default:
+		return false
+	}
+}
+
 func guessExtensionFromContent(data []byte) string {
 	if len(data) == 0 {
 		return ""
@@ -133,11 +189,13 @@ func tokenSource(ctx context.Context, inputToken string) string {
 	return "unknown"
 }
 
-// interpretAuthError returns a user-friendly error string for 401/402/403 responses.
-// Returns "" if the status code is not an auth/billing error.
-func interpretAuthError(ctx context.Context, inputToken string, statusCode int, body []byte, operation string) string {
+// interpretAuthError returns a user-friendly error string and a stable error
+// code for 401/402/403 responses. Returns ("", "") if the status code is not an
+// auth/billing error (including capacity/quota 403s, which are handled by
+// interpretTooManyJobs and the batch quota path).
+func interpretAuthError(ctx context.Context, inputToken string, statusCode int, body []byte, operation string) (msg, code string) {
 	if statusCode != http.StatusUnauthorized && statusCode != http.StatusPaymentRequired && statusCode != http.StatusForbidden {
-		return ""
+		return "", ""
 	}
 
 	src := tokenSource(ctx, inputToken)
@@ -147,7 +205,7 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 			"%s: credits exceeded (HTTP 402). The account associated with the token provided via %s has no remaining credits. "+
 				"Visit https://console.poma-ai.com to check your usage and upgrade your plan.",
 			operation, src,
-		)
+		), CodePaymentRequired
 	}
 
 	if statusCode == http.StatusUnauthorized {
@@ -155,7 +213,7 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 			"%s: authentication failed (HTTP 401). The token provided via %s is invalid, expired, or malformed. "+
 				"Generate a valid API key at https://console.poma-ai.com and set it as POMA_API_KEY or pass it as the token argument.",
 			operation, src,
-		)
+		), CodeAuthExpired
 	}
 
 	// 403 — try to parse the JSON error envelope for a specific message.
@@ -188,21 +246,21 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 			switch errResp.Reason {
 			case "too_many_jobs", "quota_exceeded":
 				// Not an auth error — this is a capacity/quota limit.
-				return ""
+				return "", ""
 			case "project_protected":
-				return projectProtectedMsg
+				return projectProtectedMsg, CodeProjectProtected
 			case "forbidden":
-				return forbiddenMsg
+				return forbiddenMsg, CodeForbidden
 			}
 		} else {
 			switch code {
 			case "too_many_jobs", "quota_exceeded":
 				// Not an auth error — this is a capacity/quota limit.
-				return ""
+				return "", ""
 			case "project_protected":
-				return projectProtectedMsg
+				return projectProtectedMsg, CodeProjectProtected
 			case "forbidden":
-				return forbiddenMsg
+				return forbiddenMsg, CodeForbidden
 			}
 		}
 	}
@@ -210,13 +268,13 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 	// Legacy: plain-text "too many jobs" from older API versions.
 	bodyStr := strings.TrimSpace(string(body))
 	if bodyStr == "too many jobs" || bodyStr == "quota exceeded" {
-		return ""
+		return "", ""
 	}
 
 	return fmt.Sprintf(
 		"%s: forbidden (HTTP 403). The token provided via %s was rejected. Response: %s",
 		operation, src, bodyStr,
-	)
+	), CodeForbidden
 }
 
 // interpretTooManyJobs recognises the job-capacity backpressure signal and, when

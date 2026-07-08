@@ -105,18 +105,21 @@ func TestInterpretAuthError(t *testing.T) {
 		body          string
 		wantEmpty     bool
 		wantMsgSubstr string
+		wantCode      string
 	}{
 		{
 			name:          "new-shape 403 reason project_protected",
 			statusCode:    http.StatusForbidden,
 			body:          `{"code":403,"reason":"project_protected","error":"project is protected"}`,
 			wantMsgSubstr: "this project is protected",
+			wantCode:      CodeProjectProtected,
 		},
 		{
 			name:          "new-shape 403 reason forbidden",
 			statusCode:    http.StatusForbidden,
 			body:          `{"code":403,"reason":"forbidden","error":"no access"}`,
 			wantMsgSubstr: "access denied",
+			wantCode:      CodeForbidden,
 		},
 		{
 			name:       "new-shape 403 reason too_many_jobs is capacity, not auth",
@@ -135,12 +138,14 @@ func TestInterpretAuthError(t *testing.T) {
 			statusCode:    http.StatusForbidden,
 			body:          `{"code":"project_protected"}`,
 			wantMsgSubstr: "this project is protected",
+			wantCode:      CodeProjectProtected,
 		},
 		{
 			name:          "legacy 403 string code forbidden",
 			statusCode:    http.StatusForbidden,
 			body:          `{"code":"forbidden"}`,
 			wantMsgSubstr: "access denied",
+			wantCode:      CodeForbidden,
 		},
 		{
 			name:       "legacy 403 string code quota_exceeded is not auth",
@@ -153,18 +158,21 @@ func TestInterpretAuthError(t *testing.T) {
 			statusCode:    http.StatusForbidden,
 			body:          `{"code":403,"reason":"some_other_reason","error":"nope"}`,
 			wantMsgSubstr: "forbidden (HTTP 403)",
+			wantCode:      CodeForbidden,
 		},
 		{
 			name:          "401 status branch preserved",
 			statusCode:    http.StatusUnauthorized,
 			body:          "",
 			wantMsgSubstr: "authentication failed (HTTP 401)",
+			wantCode:      CodeAuthExpired,
 		},
 		{
 			name:          "402 status branch preserved",
 			statusCode:    http.StatusPaymentRequired,
 			body:          "",
 			wantMsgSubstr: "credits exceeded (HTTP 402)",
+			wantCode:      CodePaymentRequired,
 		},
 		{
 			name:       "non-auth status returns empty",
@@ -176,10 +184,13 @@ func TestInterpretAuthError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg := interpretAuthError(context.Background(), "tok", tt.statusCode, []byte(tt.body), "grill ingest")
+			msg, code := interpretAuthError(context.Background(), "tok", tt.statusCode, []byte(tt.body), "grill ingest")
 			if tt.wantEmpty {
 				if msg != "" {
 					t.Fatalf("expected empty msg, got %q", msg)
+				}
+				if code != "" {
+					t.Fatalf("expected empty code, got %q", code)
 				}
 				return
 			}
@@ -188,6 +199,9 @@ func TestInterpretAuthError(t *testing.T) {
 			}
 			if tt.wantMsgSubstr != "" && !strings.Contains(msg, tt.wantMsgSubstr) {
 				t.Fatalf("message missing %q: %q", tt.wantMsgSubstr, msg)
+			}
+			if tt.wantCode != "" && code != tt.wantCode {
+				t.Fatalf("code = %q, want %q", code, tt.wantCode)
 			}
 		})
 	}

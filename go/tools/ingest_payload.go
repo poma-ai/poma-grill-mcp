@@ -169,9 +169,10 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	token := getToken(r.Context(), "")
 	if token == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = io.WriteString(w, `{"error":"missing API token (x-api-key, Authorization: Bearer, or POMA_API_KEY)"}`+"\n")
+		writeIngestUploadError(w, http.StatusUnauthorized, GrillError{
+			Error: "missing API token (x-api-key, Authorization: Bearer, or POMA_API_KEY)",
+			Code:  CodeMissingToken,
+		})
 		return
 	}
 
@@ -191,22 +192,22 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(mediaType, "multipart/form-data"):
 		if err := r.ParseMultipartForm(64 << 20); err != nil {
-			writeIngestUploadError(w, http.StatusBadRequest, err.Error())
+			writeIngestUploadError(w, http.StatusBadRequest, GrillError{Error: err.Error(), Code: CodeInvalidInput})
 			return
 		}
 		fh, hdr, err := r.FormFile("file")
 		if err != nil {
-			writeIngestUploadError(w, http.StatusBadRequest, "multipart form field \"file\" is required")
+			writeIngestUploadError(w, http.StatusBadRequest, GrillError{Error: "multipart form field \"file\" is required", Code: CodeInvalidInput})
 			return
 		}
 		defer fh.Close()
 		data, err = io.ReadAll(fh)
 		if err != nil {
-			writeIngestUploadError(w, http.StatusBadRequest, err.Error())
+			writeIngestUploadError(w, http.StatusBadRequest, GrillError{Error: err.Error(), Code: CodeInvalidInput})
 			return
 		}
 		if max > 0 && int64(len(data)) > max {
-			writeIngestUploadError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("file exceeds GRILL_INGEST_MAX_BYTES (%d)", max))
+			writeIngestUploadError(w, http.StatusRequestEntityTooLarge, GrillError{Error: fmt.Sprintf("file exceeds GRILL_INGEST_MAX_BYTES (%d)", max), Code: CodeInvalidInput})
 			return
 		}
 		filename = filepath.Base(hdr.Filename)
@@ -224,14 +225,14 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			var maxErr *http.MaxBytesError
 			if errors.As(err, &maxErr) {
-				writeIngestUploadError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body exceeds GRILL_INGEST_MAX_BYTES (%d)", max))
+				writeIngestUploadError(w, http.StatusRequestEntityTooLarge, GrillError{Error: fmt.Sprintf("body exceeds GRILL_INGEST_MAX_BYTES (%d)", max), Code: CodeInvalidInput})
 				return
 			}
-			writeIngestUploadError(w, http.StatusBadRequest, err.Error())
+			writeIngestUploadError(w, http.StatusBadRequest, GrillError{Error: err.Error(), Code: CodeInvalidInput})
 			return
 		}
 		if max > 0 && int64(len(data)) > max {
-			writeIngestUploadError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("body exceeds GRILL_INGEST_MAX_BYTES (%d)", max))
+			writeIngestUploadError(w, http.StatusRequestEntityTooLarge, GrillError{Error: fmt.Sprintf("body exceeds GRILL_INGEST_MAX_BYTES (%d)", max), Code: CodeInvalidInput})
 			return
 		}
 		filename = filepath.Base(strings.TrimSpace(r.URL.Query().Get("filename")))
@@ -249,7 +250,7 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(data) == 0 {
-		writeIngestUploadError(w, http.StatusBadRequest, "empty body")
+		writeIngestUploadError(w, http.StatusBadRequest, GrillError{Error: "empty body", Code: CodeInvalidInput})
 		return
 	}
 
@@ -259,17 +260,26 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 	projectID := getProjectID(r.Header.Get("X-Project-ID"))
 	body, st, err := grillIngestData(c, data, filename, projectID)
 	if err != nil {
-		writeIngestUploadError(w, http.StatusBadGateway, err.Error())
+		// Network/client error reaching the Grill API — transient, retryable.
+		writeIngestUploadError(w, http.StatusBadGateway, GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)})
+		return
+	}
+	if authErr, authCode := interpretAuthError(r.Context(), "", st, body, "grill ingest"); authErr != "" {
+		writeIngestUploadError(w, st, GrillError{Error: authErr, Code: authCode})
+		return
+	}
+	if throttle, retryAfter, ok := interpretTooManyJobs(st, body); ok {
+		writeIngestUploadError(w, st, GrillError{Error: throttle, Code: CodeTooManyJobs, Retryable: isRetryableCode(CodeTooManyJobs, 0), RetryAfterSeconds: retryAfter})
 		return
 	}
 	if st != http.StatusCreated {
-		writeIngestUploadError(w, st, fmt.Sprintf("grill ingest: %s", string(body)))
+		writeIngestUploadError(w, st, GrillError{Error: fmt.Sprintf("grill ingest: %s", string(body)), Code: CodeUpstreamError, Retryable: isRetryableCode(CodeUpstreamError, st)})
 		return
 	}
 
 	j, err := client.ParseJob(body)
 	if err != nil || j.JobID == "" {
-		writeIngestUploadError(w, http.StatusBadGateway, fmt.Sprintf("could not parse job_id from response: %s", string(body)))
+		writeIngestUploadError(w, http.StatusBadGateway, GrillError{Error: fmt.Sprintf("could not parse job_id from response: %s", string(body)), Code: CodeParseError})
 		return
 	}
 
@@ -278,8 +288,12 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"job_id": j.JobID})
 }
 
-func writeIngestUploadError(w http.ResponseWriter, code int, msg string) {
+// writeIngestUploadError writes a JSON error body for the HTTP upload endpoint.
+// It reuses the GrillError envelope so HTTP clients get the same code/retryable/
+// retry_after_seconds parity as the MCP tools instead of a bare prose message —
+// branch on `code`, not the prose `error`.
+func writeIngestUploadError(w http.ResponseWriter, httpStatus int, ge GrillError) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	w.WriteHeader(httpStatus)
+	_ = json.NewEncoder(w).Encode(ge)
 }
