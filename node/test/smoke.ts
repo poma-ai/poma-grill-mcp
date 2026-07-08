@@ -248,11 +248,29 @@ function startStubAPI(): Promise<{ url: string; docsRequests: Map<string, number
       case "degraded":
         res.end(docsPageBody(["d1", "d2"], 3, { degraded: true }));
         return;
+      case "nocursor":
+        // has_more is set but next_cursor is missing: the loop cannot advance,
+        // so it stops after one request and notes the gap.
+        res.end(docsPageBody(["d1"], 50, { hasMore: true, nextCursor: null }));
+        return;
       case "midfail":
         if (cursor === "") res.end(docsPageBody(["d1", "d2"], 6, { hasMore: true, nextCursor: "c2" }));
         else {
           res.statusCode = 500;
           res.end('{"error":"boom"}');
+        }
+        return;
+      case "firstfail":
+        res.statusCode = 500;
+        res.end('{"error":"boom"}');
+        return;
+      case "midauth":
+        // First page succeeds, then a 401: an auth failure is not transient, so
+        // the tool aborts with a hard error rather than a partial + note.
+        if (cursor === "") res.end(docsPageBody(["d1", "d2"], 6, { hasMore: true, nextCursor: "c2" }));
+        else {
+          res.statusCode = 401;
+          res.end('{"error":"unauthorized"}');
         }
         return;
       default:
@@ -276,6 +294,7 @@ interface DocsListContent {
   documents?: unknown[];
   total_documents?: number;
   note?: string;
+  error?: string;
 }
 
 async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, number>): Promise<void> {
@@ -292,10 +311,12 @@ async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, 
   const cases: {
     scenario: string;
     wantRequests: number;
-    wantDocs: number;
-    wantTotal: number;
+    wantDocs?: number;
+    wantTotal?: number;
     wantNoteSub?: string[];
     wantNoNote?: boolean;
+    wantError?: boolean;
+    wantErrorSub?: string;
   }[] = [
     { scenario: "legacy", wantRequests: 1, wantDocs: 2, wantTotal: 2, wantNoNote: true },
     { scenario: "paged", wantRequests: 3, wantDocs: 5, wantTotal: 5, wantNoNote: true },
@@ -308,11 +329,26 @@ async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, 
       wantNoteSub: ["Showing 2 of 3 documents.", "temporarily unavailable"],
     },
     {
+      scenario: "nocursor",
+      wantRequests: 1,
+      wantDocs: 1,
+      wantTotal: 50,
+      wantNoteSub: ["Showing 1 of 50 documents."],
+    },
+    {
       scenario: "midfail",
       wantRequests: 2,
       wantDocs: 2,
       wantTotal: 6,
       wantNoteSub: ["Showing 2 of 6 documents.", "Fetching additional pages failed"],
+    },
+    { scenario: "firstfail", wantRequests: 1, wantError: true, wantErrorSub: "grill docs list: HTTP 500" },
+    {
+      // First page succeeds, second returns 401: aborts with a hard error, not a partial + note.
+      scenario: "midauth",
+      wantRequests: 2,
+      wantError: true,
+      wantErrorSub: "authentication failed (HTTP 401)",
     },
   ];
 
@@ -325,14 +361,22 @@ async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, 
     const note = content.note ?? "";
 
     const problems: string[] = [];
-    if (result?.isError === true) problems.push(`unexpected isError: ${JSON.stringify(content)}`);
-    if (requests !== c.wantRequests) problems.push(`requests=${requests}, want ${c.wantRequests}`);
-    if (docs.length !== c.wantDocs) problems.push(`documents=${docs.length}, want ${c.wantDocs}`);
-    if (content.total_documents !== c.wantTotal) problems.push(`total_documents=${content.total_documents}, want ${c.wantTotal}`);
-    if (c.wantNoNote && note !== "") problems.push(`note should be absent, got "${note}"`);
-    for (const sub of c.wantNoteSub ?? []) {
-      if (!note.includes(sub)) problems.push(`note "${note}" missing "${sub}"`);
+    if (c.wantError) {
+      if (result?.isError !== true) problems.push(`expected isError, got ${JSON.stringify(content)}`);
+      const errText = content.error ?? "";
+      if (c.wantErrorSub && !errText.includes(c.wantErrorSub)) {
+        problems.push(`error "${errText}" missing "${c.wantErrorSub}"`);
+      }
+    } else {
+      if (result?.isError === true) problems.push(`unexpected isError: ${JSON.stringify(content)}`);
+      if (docs.length !== c.wantDocs) problems.push(`documents=${docs.length}, want ${c.wantDocs}`);
+      if (content.total_documents !== c.wantTotal) problems.push(`total_documents=${content.total_documents}, want ${c.wantTotal}`);
+      if (c.wantNoNote && note !== "") problems.push(`note should be absent, got "${note}"`);
+      for (const sub of c.wantNoteSub ?? []) {
+        if (!note.includes(sub)) problems.push(`note "${note}" missing "${sub}"`);
+      }
     }
+    if (requests !== c.wantRequests) problems.push(`requests=${requests}, want ${c.wantRequests}`);
     record(`docs list: ${c.scenario}`, problems.length === 0, problems.join("; "));
   }
 }

@@ -217,6 +217,17 @@ func TestGrillDocsListAutoPaging(t *testing.T) {
 			wantRequests: 1,
 			wantErrSub:   "grill docs list: HTTP 500",
 		},
+		{
+			name: "mid-loop auth failure is a hard error, not a note",
+			pages: func(t *testing.T, cursor string, call int) (int, string) {
+				if cursor == "" {
+					return 200, docsPage(t, []string{"d1", "d2"}, 6, true, "c2", false, false)
+				}
+				return 401, `{"error":"unauthorized"}`
+			},
+			wantRequests: 2, // first page + the failing second page, then it aborts
+			wantErrSub:   "authentication failed (HTTP 401)",
+		},
 	}
 
 	for i, tt := range tests {
@@ -252,6 +263,9 @@ func TestGrillDocsListAutoPaging(t *testing.T) {
 				}
 				if !strings.Contains(out.Error, tt.wantErrSub) {
 					t.Fatalf("Error = %q, want substring %q", out.Error, tt.wantErrSub)
+				}
+				if tt.wantRequests != 0 && requests != tt.wantRequests {
+					t.Errorf("requests = %d, want %d (loop must stop at the failing page)", requests, tt.wantRequests)
 				}
 				return
 			}

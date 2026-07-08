@@ -72,29 +72,31 @@ export async function grillDocsList(
   const projectID = getProjectID(args.project_id);
   const client = new GrillClient(token, projectID);
 
-  // Fetches and parses one page; returns an error message instead on failure.
-  const fetchPage = async (cursor: string): Promise<GrillDocsPage | { errMsg: string }> => {
+  // Fetches and parses one page. On failure returns an error message plus
+  // whether it is an auth/billing failure — which is fatal, not a transient
+  // paging hiccup, and must abort the whole call.
+  const fetchPage = async (cursor: string): Promise<GrillDocsPage | { errMsg: string; auth: boolean }> => {
     const path = cursor === "" ? "/grill/docs" : `/grill/docs?cursor=${encodeURIComponent(cursor)}`;
     let res;
     try {
       res = await client.doGet(path);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { errMsg: `grill docs list: ${msg}` };
+      return { errMsg: `grill docs list: ${msg}`, auth: false };
     }
 
     const authErr = interpretAuthError(args.token, res.status, res.body, "grill docs list");
-    if (authErr) return { errMsg: authErr };
+    if (authErr) return { errMsg: authErr, auth: true };
     const text = new TextDecoder("utf-8").decode(res.body);
     if (res.status !== 200) {
-      return { errMsg: `grill docs list: HTTP ${res.status}: ${text}` };
+      return { errMsg: `grill docs list: HTTP ${res.status}: ${text}`, auth: false };
     }
 
     try {
       return parseDocsPage(JSON.parse(text) as Record<string, unknown>);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { errMsg: `grill docs list: parse response: ${msg}` };
+      return { errMsg: `grill docs list: parse response: ${msg}`, auth: false };
     }
   };
 
@@ -109,7 +111,11 @@ export async function grillDocsList(
   for (let page = 0; page < grillDocsMaxPages; page++) {
     const result = await fetchPage(cursor);
     if ("errMsg" in result) {
-      if (page === 0) return errorResult(result.errMsg);
+      // An auth/billing failure is not transient: the credential is bad,
+      // expired, or forbidden and every further page would fail the same way.
+      // Surface the actionable message as a hard error on any page, rather than
+      // burying it in a note.
+      if (page === 0 || result.auth) return errorResult(result.errMsg);
       // Keep the pages already fetched; surface the gap in the note.
       truncated = true;
       pagingErr = result.errMsg;

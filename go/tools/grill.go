@@ -710,22 +710,25 @@ func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsL
 	projectID := getProjectID(input.ProjectID)
 	c := grillClient(token)
 
-	fetchPage := func(cursor string) (grillDocsPage, string) {
+	// fetchPage returns the parsed page, an error message (empty on success),
+	// and whether that error is an auth/billing failure — which is fatal, not a
+	// transient paging hiccup, and must abort the whole call.
+	fetchPage := func(cursor string) (grillDocsPage, string, bool) {
 		var p grillDocsPage
 		body, st, err := grillListDocs(c, projectID, cursor)
 		if err != nil {
-			return p, err.Error()
+			return p, err.Error(), false
 		}
 		if authErr := interpretAuthError(ctx, input.Token, st, body, "grill docs list"); authErr != "" {
-			return p, authErr
+			return p, authErr, true
 		}
 		if st != http.StatusOK {
-			return p, fmt.Sprintf("grill docs list: HTTP %d: %s", st, string(body))
+			return p, fmt.Sprintf("grill docs list: HTTP %d: %s", st, string(body)), false
 		}
 		if err := json.Unmarshal(body, &p); err != nil {
-			return p, fmt.Sprintf("grill docs list: parse response: %v", err)
+			return p, fmt.Sprintf("grill docs list: parse response: %v", err), false
 		}
-		return p, ""
+		return p, "", false
 	}
 
 	var (
@@ -738,9 +741,13 @@ func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsL
 		cursor    string
 	)
 	for page := 0; page < grillDocsMaxPages; page++ {
-		p, errMsg := fetchPage(cursor)
+		p, errMsg, isAuthErr := fetchPage(cursor)
 		if errMsg != "" {
-			if page == 0 {
+			// An auth/billing failure is not transient: the credential is bad,
+			// expired, or forbidden and every further page would fail the same
+			// way. Surface the actionable message as a hard error on any page,
+			// rather than burying it in a note.
+			if page == 0 || isAuthErr {
 				return errResult(), GrillDocsListOutput{Error: errMsg}, nil
 			}
 			// Keep the pages already fetched; surface the gap in the note.
