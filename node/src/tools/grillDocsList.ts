@@ -7,6 +7,12 @@ import { GrillClient } from "../client/grillClient.js";
 // with a truncation note. Mirrors the Go implementation.
 const grillDocsMaxPages = 10;
 
+// Sent as an explicit limit on every docs request. Matches the server default,
+// so page shapes are unchanged — but its PRESENCE keeps this paging-aware
+// client out of grill's legacy mode, whose list_docs_legacy_truncated_total
+// metric must only count old, limit-unaware callers. Mirrors the Go client.
+const grillDocsPageLimit = 100;
+
 // One wire page of GET /grill/docs. On the currently deployed API
 // has_more/next_cursor/degraded are absent and default to their zero values,
 // which collapses the auto-paging loop to exactly one request — today's
@@ -76,7 +82,8 @@ export async function grillDocsList(
   // whether it is an auth/billing failure — which is fatal, not a transient
   // paging hiccup, and must abort the whole call.
   const fetchPage = async (cursor: string): Promise<GrillDocsPage | { errMsg: string; auth: boolean }> => {
-    const path = cursor === "" ? "/grill/docs" : `/grill/docs?cursor=${encodeURIComponent(cursor)}`;
+    const base = `/grill/docs?limit=${grillDocsPageLimit}`;
+    const path = cursor === "" ? base : `${base}&cursor=${encodeURIComponent(cursor)}`;
     let res;
     try {
       res = await client.doGet(path);

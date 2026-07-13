@@ -65,17 +65,24 @@ func doJSONWithProjectID(c *client.Client, method, endpoint string, body any, pr
 	return c.Do(method, endpoint, bytes.NewReader(b), headers)
 }
 
+// grillDocsPageLimit is sent as an explicit limit on every docs request. The
+// value matches the server default, so it changes nothing about page shapes —
+// but its PRESENCE keeps this paging-aware client out of grill's legacy mode,
+// whose list_docs_legacy_truncated_total metric must only count old,
+// limit-unaware callers.
+const grillDocsPageLimit = 100
+
 // grillListDocs sends GET /grill/docs, optionally passing a pagination cursor
-// (empty cursor = first page / legacy unpaged request).
+// (empty cursor = first page).
 // Placeholder for (*client.Client).GrillListDocs(cursor string) ([]byte, int, error).
 func grillListDocs(c *client.Client, projectID, cursor string) ([]byte, int, error) {
 	var headers map[string]string
 	if projectID != "" {
 		headers = map[string]string{"X-Project-ID": projectID}
 	}
-	endpoint := "/grill/docs"
+	endpoint := "/grill/docs?limit=" + strconv.Itoa(grillDocsPageLimit)
 	if cursor != "" {
-		endpoint += "?cursor=" + url.QueryEscape(cursor)
+		endpoint += "&cursor=" + url.QueryEscape(cursor)
 	}
 	return c.Do(http.MethodGet, endpoint, nil, headers)
 }
