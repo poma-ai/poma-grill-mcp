@@ -12,6 +12,8 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface, type Interface } from "node:readline";
@@ -28,6 +30,7 @@ const EXPECTED_TOOLS = [
   "grill_ingest_resume",
   "grill_ingest_batch",
   "grill_jobs_status",
+  "grill_projects",
   "grill_search",
 ] as const;
 
@@ -186,6 +189,198 @@ async function offlineTests(client: MCPClient): Promise<void> {
   );
 }
 
+// -- grill_docs_list auto-paging tests (offline, against an in-process stub API) --
+//
+// The stub selects a scenario from the Bearer token, so a single server + a
+// single spawned MCP process cover every pagination shape. Cursor plumbing:
+// the tool must send GET /v3/grill/docs?cursor=<next_cursor> for follow-ups.
+
+function docsPageBody(
+  docIDs: string[],
+  total: number,
+  opts: { hasMore?: boolean; nextCursor?: string | null; degraded?: boolean; legacy?: boolean } = {},
+): string {
+  const page: Record<string, unknown> = {
+    documents: docIDs.map((id) => ({ doc_id: id })),
+    namespace: "account_14d12545",
+    total_documents: total,
+  };
+  if (!opts.legacy) {
+    page.has_more = opts.hasMore === true;
+    page.next_cursor = opts.nextCursor ?? null;
+    page.degraded = opts.degraded === true;
+  }
+  return JSON.stringify(page);
+}
+
+function startStubAPI(): Promise<{ url: string; docsRequests: Map<string, number>; close: () => Promise<void> }> {
+  const docsRequests = new Map<string, number>();
+  const server: Server = createServer((req, res) => {
+    const u = new URL(req.url ?? "/", "http://localhost");
+    res.setHeader("content-type", "application/json");
+    if (u.pathname !== "/v3/grill/docs") {
+      res.statusCode = 404;
+      res.end("{}");
+      return;
+    }
+    const scenario = (req.headers.authorization ?? "").replace("Bearer ", "");
+    const call = (docsRequests.get(scenario) ?? 0) + 1;
+    docsRequests.set(scenario, call);
+    const cursor = u.searchParams.get("cursor") ?? "";
+
+    switch (scenario) {
+      case "legacy":
+        if (cursor !== "") {
+          res.statusCode = 500;
+          res.end(`{"error":"legacy API must never receive a cursor, got ${cursor}"}`);
+          return;
+        }
+        res.end(docsPageBody(["d1", "d2"], 2, { legacy: true }));
+        return;
+      case "paged":
+        if (cursor === "") res.end(docsPageBody(["d1", "d2"], 5, { hasMore: true, nextCursor: "c2" }));
+        else if (cursor === "c2") res.end(docsPageBody(["d3", "d4"], 5, { hasMore: true, nextCursor: "c3" }));
+        else res.end(docsPageBody(["d5"], 5));
+        return;
+      case "cap":
+        res.end(docsPageBody([`d${call}`], 100, { hasMore: true, nextCursor: `c${call + 1}` }));
+        return;
+      case "degraded":
+        res.end(docsPageBody(["d1", "d2"], 3, { degraded: true }));
+        return;
+      case "nocursor":
+        // has_more is set but next_cursor is missing: the loop cannot advance,
+        // so it stops after one request and notes the gap.
+        res.end(docsPageBody(["d1"], 50, { hasMore: true, nextCursor: null }));
+        return;
+      case "midfail":
+        if (cursor === "") res.end(docsPageBody(["d1", "d2"], 6, { hasMore: true, nextCursor: "c2" }));
+        else {
+          res.statusCode = 500;
+          res.end('{"error":"boom"}');
+        }
+        return;
+      case "firstfail":
+        res.statusCode = 500;
+        res.end('{"error":"boom"}');
+        return;
+      case "midauth":
+        // First page succeeds, then a 401: an auth failure is not transient, so
+        // the tool aborts with a hard error rather than a partial + note.
+        if (cursor === "") res.end(docsPageBody(["d1", "d2"], 6, { hasMore: true, nextCursor: "c2" }));
+        else {
+          res.statusCode = 401;
+          res.end('{"error":"unauthorized"}');
+        }
+        return;
+      default:
+        res.statusCode = 500;
+        res.end(`{"error":"unknown scenario ${scenario}"}`);
+    }
+  });
+  return new Promise((resolveServer) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      resolveServer({
+        url: `http://127.0.0.1:${port}`,
+        docsRequests,
+        close: () => new Promise((res) => server.close(() => res())),
+      });
+    });
+  });
+}
+
+interface DocsListContent {
+  documents?: unknown[];
+  total_documents?: number;
+  note?: string;
+  error?: string;
+}
+
+async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, number>): Promise<void> {
+  process.stdout.write("grill_docs_list auto-paging tests:\n");
+
+  const initResp = await client.request("initialize", {
+    protocolVersion: "2024-11-05",
+    capabilities: {},
+    clientInfo: { name: "smoke-paging", version: "0" },
+  });
+  record("paging client handshake", initResp.result !== undefined);
+  client.notify("notifications/initialized");
+
+  const cases: {
+    scenario: string;
+    wantRequests: number;
+    wantDocs?: number;
+    wantTotal?: number;
+    wantNoteSub?: string[];
+    wantNoNote?: boolean;
+    wantError?: boolean;
+    wantErrorSub?: string;
+  }[] = [
+    { scenario: "legacy", wantRequests: 1, wantDocs: 2, wantTotal: 2, wantNoNote: true },
+    { scenario: "paged", wantRequests: 3, wantDocs: 5, wantTotal: 5, wantNoNote: true },
+    { scenario: "cap", wantRequests: 10, wantDocs: 10, wantTotal: 100, wantNoteSub: ["Showing 10 of 100 documents."] },
+    {
+      scenario: "degraded",
+      wantRequests: 1,
+      wantDocs: 2,
+      wantTotal: 3,
+      wantNoteSub: ["Showing 2 of 3 documents.", "temporarily unavailable"],
+    },
+    {
+      scenario: "nocursor",
+      wantRequests: 1,
+      wantDocs: 1,
+      wantTotal: 50,
+      wantNoteSub: ["Showing 1 of 50 documents."],
+    },
+    {
+      scenario: "midfail",
+      wantRequests: 2,
+      wantDocs: 2,
+      wantTotal: 6,
+      wantNoteSub: ["Showing 2 of 6 documents.", "Fetching additional pages failed"],
+    },
+    { scenario: "firstfail", wantRequests: 1, wantError: true, wantErrorSub: "grill docs list: HTTP 500" },
+    {
+      // First page succeeds, second returns 401: aborts with a hard error, not a partial + note.
+      scenario: "midauth",
+      wantRequests: 2,
+      wantError: true,
+      wantErrorSub: "authentication failed (HTTP 401)",
+    },
+  ];
+
+  for (const c of cases) {
+    const resp = await client.request("tools/call", { name: "grill_docs_list", arguments: { token: c.scenario } });
+    const result = resp.result as { isError?: boolean; structuredContent?: DocsListContent } | undefined;
+    const content = result?.structuredContent ?? {};
+    const docs = Array.isArray(content.documents) ? content.documents : [];
+    const requests = docsRequests.get(c.scenario) ?? 0;
+    const note = content.note ?? "";
+
+    const problems: string[] = [];
+    if (c.wantError) {
+      if (result?.isError !== true) problems.push(`expected isError, got ${JSON.stringify(content)}`);
+      const errText = content.error ?? "";
+      if (c.wantErrorSub && !errText.includes(c.wantErrorSub)) {
+        problems.push(`error "${errText}" missing "${c.wantErrorSub}"`);
+      }
+    } else {
+      if (result?.isError === true) problems.push(`unexpected isError: ${JSON.stringify(content)}`);
+      if (docs.length !== c.wantDocs) problems.push(`documents=${docs.length}, want ${c.wantDocs}`);
+      if (content.total_documents !== c.wantTotal) problems.push(`total_documents=${content.total_documents}, want ${c.wantTotal}`);
+      if (c.wantNoNote && note !== "") problems.push(`note should be absent, got "${note}"`);
+      for (const sub of c.wantNoteSub ?? []) {
+        if (!note.includes(sub)) problems.push(`note "${note}" missing "${sub}"`);
+      }
+    }
+    if (requests !== c.wantRequests) problems.push(`requests=${requests}, want ${c.wantRequests}`);
+    record(`docs list: ${c.scenario}`, problems.length === 0, problems.join("; "));
+  }
+}
+
 async function main(): Promise<void> {
   if (!existsSync(BINARY)) {
     process.stderr.write(`error: ${BINARY} not found. Run \`npm run build\` first.\n`);
@@ -199,6 +394,15 @@ async function main(): Promise<void> {
     await offlineTests(client);
   } finally {
     await client.close();
+  }
+
+  const stub = await startStubAPI();
+  const pagingClient = new MCPClient({ POMA_API_BASE_URL: stub.url });
+  try {
+    await docsListPagingTests(pagingClient, stub.docsRequests);
+  } finally {
+    await pagingClient.close();
+    await stub.close();
   }
 
   const passed = results.filter((r) => r.ok).length;
