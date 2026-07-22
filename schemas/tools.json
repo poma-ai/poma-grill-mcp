@@ -1,305 +1,674 @@
 {
-  "$comment": "Single source of truth for POMA Grill MCP tool definitions. Consumed directly by the Node implementation; the Go implementation (go/tools/grill.go) currently maintains hand-written copies that must be kept in sync until codegen lands. See PLAN.md.",
+  "$comment": "Single source of truth for POMA Grill MCP tool definitions. Consumed directly by the Node implementation; the Go implementation (go/tools/grill.go) maintains hand-written copies that must be kept in sync until codegen lands. Descriptions, outputSchema and annotations are generated to match the Go tools/list surface (see PLAN.md and .agent/DECISIONS.md 2026-07-22).",
   "tools": [
     {
       "name": "grill_explain",
-      "annotations": { "title": "Explain POMA Grill", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Explain POMA Grill"
+      },
       "description": "Returns a structured explanation of how POMA Grill works: ingesting data, searching, result format, and how to get an API key. No arguments or authentication required.",
       "inputSchema": {
-        "type": "object",
-        "properties": {}
+        "properties": {},
+        "type": "object"
       },
       "outputSchema": {
-        "type": "object",
         "properties": {
           "explanation": {
-            "type": "string",
-            "description": "Markdown-formatted explanation of POMA Grill."
+            "description": "Markdown-formatted explanation of POMA Grill.",
+            "type": "string"
           }
-        }
+        },
+        "type": "object"
       }
     },
     {
       "name": "grill_ingest",
-      "annotations": { "title": "Ingest document", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false },
-      "description": "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search. Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop.",
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "title": "Ingest Document"
+      },
+      "description": "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
       "inputSchema": {
-        "type": "object",
         "properties": {
           "file_base64": {
-            "type": "string",
-            "description": "Standard base64 of the file bytes. Use for small files. Mutually exclusive with file_path."
+            "description": "Standard base64 of the file bytes. Use for small files. Mutually exclusive with file_path.",
+            "type": "string"
           },
           "file_path": {
-            "type": "string",
-            "description": "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES."
+            "description": "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES.",
+            "type": "string"
           },
           "filename": {
-            "type": "string",
-            "description": "Original basename (e.g. report.pdf). Optional; inferred from file_path or content when possible."
-          },
-          "token": {
-            "type": "string",
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+            "description": "Original basename (e.g. report.pdf). Optional; inferred from file_path or content when possible.",
+            "type": "string"
           },
           "project_id": {
-            "type": "string",
-            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var."
+            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var.",
+            "type": "string"
+          },
+          "token": {
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "type": "string"
           }
-        }
+        },
+        "type": "object"
       },
       "outputSchema": {
-        "type": "object",
         "properties": {
-          "job_id": { "type": "string" },
-          "events": { "type": "array" },
-          "error":  { "type": "string" },
-          "retryable": { "type": "boolean", "description": "True when the error is transient job-capacity backpressure (too_many_jobs): the ingest did not happen; retry the same call after retry_after_seconds and pause new ingests until capacity frees." },
-          "retry_after_seconds": { "type": "integer", "description": "Suggested seconds to wait before retrying when retryable is true." }
-        }
+          "code": {
+            "description": "Stable machine-readable error classification, present only on errors. One of: missing_token, invalid_input, auth_expired, payment_required, project_protected, forbidden, too_many_jobs, upstream_error, transport_error, parse_error, job_failed, stream_error. Branch on this — never on the prose error string.",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "retry_after_seconds": {
+            "description": "Suggested seconds to wait before retrying when retryable is true (set for too_many_jobs backpressure).",
+            "type": "integer"
+          },
+          "retryable": {
+            "description": "True only for transient errors safe to retry: too_many_jobs, transport_error, stream_error, and 5xx upstream_error. When true, wait retry_after_seconds (if present) then retry the SAME call. Every other code is terminal — do NOT retry; fix the cause or abort.",
+            "type": "boolean"
+          },
+          "scope": {
+            "description": "Which project this result belongs to. ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results.",
+            "properties": {
+              "hint": {
+                "description": "Ready-to-relay sentence naming the project for the user.",
+                "type": "string"
+              },
+              "is_default": {
+                "description": "True when this is the account's default workspace (no specific project selected).",
+                "type": "boolean"
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "project_name": {
+                "description": "Human-readable project name, e.g. \"Default Workspace\".",
+                "type": "string"
+              },
+              "source": {
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
       }
     },
     {
       "name": "grill_ingest_sync",
-      "annotations": { "title": "Ingest document (wait)", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false },
-      "description": "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events. Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees.",
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "title": "Ingest Document (await completion)"
+      },
+      "description": "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
       "inputSchema": {
-        "type": "object",
         "properties": {
           "file_base64": {
-            "type": "string",
-            "description": "Standard base64 of the file bytes. Use for small files. Mutually exclusive with file_path."
+            "description": "Standard base64 of the file bytes. Use for small files. Mutually exclusive with file_path.",
+            "type": "string"
           },
           "file_path": {
-            "type": "string",
-            "description": "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES."
+            "description": "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES.",
+            "type": "string"
           },
           "filename": {
-            "type": "string",
-            "description": "Original basename (e.g. report.pdf). Optional; inferred from file_path or content when possible."
-          },
-          "token": {
-            "type": "string",
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+            "description": "Original basename (e.g. report.pdf). Optional; inferred from file_path or content when possible.",
+            "type": "string"
           },
           "project_id": {
-            "type": "string",
-            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var."
+            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var.",
+            "type": "string"
+          },
+          "token": {
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "type": "string"
           }
-        }
+        },
+        "type": "object"
       },
       "outputSchema": {
-        "type": "object",
         "properties": {
-          "job_id": { "type": "string" },
-          "events": { "type": "array" },
-          "error":  { "type": "string" },
-          "retryable": { "type": "boolean", "description": "True when the error is transient job-capacity backpressure (too_many_jobs): the ingest did not happen; retry the same call after retry_after_seconds and pause new ingests until capacity frees." },
-          "retry_after_seconds": { "type": "integer", "description": "Suggested seconds to wait before retrying when retryable is true." }
-        }
+          "code": {
+            "description": "Stable machine-readable error classification, present only on errors. One of: missing_token, invalid_input, auth_expired, payment_required, project_protected, forbidden, too_many_jobs, upstream_error, transport_error, parse_error, job_failed, stream_error. Branch on this — never on the prose error string.",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "retry_after_seconds": {
+            "description": "Suggested seconds to wait before retrying when retryable is true (set for too_many_jobs backpressure).",
+            "type": "integer"
+          },
+          "retryable": {
+            "description": "True only for transient errors safe to retry: too_many_jobs, transport_error, stream_error, and 5xx upstream_error. When true, wait retry_after_seconds (if present) then retry the SAME call. Every other code is terminal — do NOT retry; fix the cause or abort.",
+            "type": "boolean"
+          },
+          "scope": {
+            "description": "Which project this result belongs to. ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results.",
+            "properties": {
+              "hint": {
+                "description": "Ready-to-relay sentence naming the project for the user.",
+                "type": "string"
+              },
+              "is_default": {
+                "description": "True when this is the account's default workspace (no specific project selected).",
+                "type": "boolean"
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "project_name": {
+                "description": "Human-readable project name, e.g. \"Default Workspace\".",
+                "type": "string"
+              },
+              "source": {
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
       }
     },
     {
       "name": "grill_ingest_resume",
-      "annotations": { "title": "Resume ingest tracking", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
-      "description": "Resume tracking an in-progress POMA Grill ingestion job. Connects to the status SSE stream for the given job_id and waits until a terminal state (done, failed, grilled, deleted), emitting progress notifications. Use when grill_ingest was called earlier and you need to wait for completion.",
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Resume Ingest Tracking"
+      },
+      "description": "Resume tracking an in-progress POMA Grill ingestion job started by an earlier grill_ingest call. Connects to the status SSE stream for the given job_id and waits until a terminal state (done, failed, grilled, deleted), emitting progress notifications. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
       "inputSchema": {
-        "type": "object",
         "properties": {
           "job_id": {
-            "type": "string",
-            "description": "Job ID returned by a previous grill_ingest call."
+            "description": "Job ID returned by a previous grill_ingest call.",
+            "type": "string"
           },
           "token": {
-            "type": "string",
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "type": "string"
           }
         },
-        "required": ["job_id"]
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
       },
       "outputSchema": {
-        "type": "object",
         "properties": {
-          "job_id": { "type": "string" },
-          "events": { "type": "array" },
-          "error":  { "type": "string" }
-        }
+          "code": {
+            "description": "Stable machine-readable error classification, present only on errors. One of: missing_token, invalid_input, auth_expired, payment_required, project_protected, forbidden, too_many_jobs, upstream_error, transport_error, parse_error, job_failed, stream_error. Branch on this — never on the prose error string.",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "events": {
+            "type": "array"
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "retry_after_seconds": {
+            "description": "Suggested seconds to wait before retrying when retryable is true (set for too_many_jobs backpressure).",
+            "type": "integer"
+          },
+          "retryable": {
+            "description": "True only for transient errors safe to retry: too_many_jobs, transport_error, stream_error, and 5xx upstream_error. When true, wait retry_after_seconds (if present) then retry the SAME call. Every other code is terminal — do NOT retry; fix the cause or abort.",
+            "type": "boolean"
+          },
+          "scope": {
+            "description": "Which project this result belongs to. ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results.",
+            "properties": {
+              "hint": {
+                "description": "Ready-to-relay sentence naming the project for the user.",
+                "type": "string"
+              },
+              "is_default": {
+                "description": "True when this is the account's default workspace (no specific project selected).",
+                "type": "boolean"
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "project_name": {
+                "description": "Human-readable project name, e.g. \"Default Workspace\".",
+                "type": "string"
+              },
+              "source": {
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
       }
     },
     {
       "name": "grill_ingest_batch",
-      "annotations": { "title": "Ingest documents (batch)", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false },
-      "description": "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing. Use grill_jobs_status to monitor progress. On free-tier accounts use concurrency:1. When the account is at its concurrent-job capacity the API returns HTTP 429 too_many_jobs; those files come back with quota_exceed=true (counted in quota_exceeded_count) — they were NOT ingested. Retry only the quota_exceed files once running jobs finish (poll grill_jobs_status); lower concurrency if it recurs.",
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "title": "Ingest Documents (batch)"
+      },
+      "description": "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing; progress is reported by grill_jobs_status. The response includes a `scope` object identifying which project the documents were ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Free-tier accounts should set concurrency to 1. When the account is at its concurrent-job capacity the API returns HTTP 429 too_many_jobs; those files come back with quota_exceed=true (counted in quota_exceeded_count) — they were NOT ingested. Retry only the quota_exceed files once running jobs finish (poll grill_jobs_status); lower concurrency if it recurs. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
       "inputSchema": {
-        "type": "object",
         "properties": {
-          "file_paths": {
-            "type": "array",
-            "description": "Absolute or cwd-relative paths readable by the MCP server process. Max 50 files.",
-            "items": { "type": "string" }
-          },
-          "token": {
-            "type": "string",
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
-          },
           "concurrency": {
-            "type": "integer",
-            "description": "Upload concurrency (default 5, max 10). Use 1 for free-tier accounts."
+            "description": "Upload concurrency (default 5, max 10). Use 1 for free-tier accounts.",
+            "type": "integer"
+          },
+          "file_paths": {
+            "description": "Absolute or cwd-relative paths readable by the MCP server process. Max 50 files.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "project_id": {
-            "type": "string",
-            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var."
+            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var.",
+            "type": "string"
+          },
+          "token": {
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "type": "string"
           }
         },
-        "required": ["file_paths"]
+        "required": [
+          "file_paths"
+        ],
+        "type": "object"
       },
       "outputSchema": {
-        "type": "object",
         "properties": {
-          "results":              { "type": "array" },
-          "submitted_count":      { "type": "integer" },
-          "failed_count":         { "type": "integer" },
-          "quota_exceeded_count": { "type": "integer" },
-          "error":                { "type": "string" }
-        }
+          "code": {
+            "description": "Stable machine-readable error classification, present only on errors. One of: missing_token, invalid_input, auth_expired, payment_required, project_protected, forbidden, too_many_jobs, upstream_error, transport_error, parse_error, job_failed, stream_error. Branch on this — never on the prose error string.",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "failed_count": {
+            "type": "integer"
+          },
+          "quota_exceeded_count": {
+            "type": "integer"
+          },
+          "results": {
+            "type": "array"
+          },
+          "retry_after_seconds": {
+            "description": "Suggested seconds to wait before retrying when retryable is true (set for too_many_jobs backpressure).",
+            "type": "integer"
+          },
+          "retryable": {
+            "description": "True only for transient errors safe to retry: too_many_jobs, transport_error, stream_error, and 5xx upstream_error. When true, wait retry_after_seconds (if present) then retry the SAME call. Every other code is terminal — do NOT retry; fix the cause or abort.",
+            "type": "boolean"
+          },
+          "scope": {
+            "description": "Which project this result belongs to. ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results.",
+            "properties": {
+              "hint": {
+                "description": "Ready-to-relay sentence naming the project for the user.",
+                "type": "string"
+              },
+              "is_default": {
+                "description": "True when this is the account's default workspace (no specific project selected).",
+                "type": "boolean"
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "project_name": {
+                "description": "Human-readable project name, e.g. \"Default Workspace\".",
+                "type": "string"
+              },
+              "source": {
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "submitted_count": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
       }
     },
     {
       "name": "grill_jobs_status",
-      "annotations": { "title": "Check job status", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
-      "description": "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming. Use periodically after grill_ingest or grill_ingest_batch to check progress. pending_count/done_count/failed_count give a quick summary.",
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Job Status"
+      },
+      "description": "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming — reporting progress for jobs created by grill_ingest or grill_ingest_batch. pending_count/done_count/failed_count give a quick summary. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
       "inputSchema": {
-        "type": "object",
         "properties": {
           "job_ids": {
-            "type": "array",
             "description": "Job IDs to query. Max 50.",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "token": {
-            "type": "string",
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "type": "string"
           }
         },
-        "required": ["job_ids"]
+        "required": [
+          "job_ids"
+        ],
+        "type": "object"
       },
       "outputSchema": {
-        "type": "object",
         "properties": {
-          "results":       { "type": "array" },
-          "pending_count": { "type": "integer" },
-          "done_count":    { "type": "integer" },
-          "failed_count":  { "type": "integer" },
-          "error":         { "type": "string" }
-        }
+          "code": {
+            "description": "Stable machine-readable error classification, present only on errors. One of: missing_token, invalid_input, auth_expired, payment_required, project_protected, forbidden, too_many_jobs, upstream_error, transport_error, parse_error, job_failed, stream_error. Branch on this — never on the prose error string.",
+            "type": "string"
+          },
+          "done_count": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "failed_count": {
+            "type": "integer"
+          },
+          "pending_count": {
+            "type": "integer"
+          },
+          "results": {
+            "type": "array"
+          },
+          "retry_after_seconds": {
+            "description": "Suggested seconds to wait before retrying when retryable is true (set for too_many_jobs backpressure).",
+            "type": "integer"
+          },
+          "retryable": {
+            "description": "True only for transient errors safe to retry: too_many_jobs, transport_error, stream_error, and 5xx upstream_error. When true, wait retry_after_seconds (if present) then retry the SAME call. Every other code is terminal — do NOT retry; fix the cause or abort.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
       }
     },
     {
       "name": "grill_search",
-      "annotations": { "title": "Search documents", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
-      "description": "Search the POMA Grill context engine and return a context block for RAG. Set doc_filter to restrict search to a specific document (use the job_id returned by grill_ingest as the doc_id). Use exclude_doc_ids to skip docs already cited in this conversation. Result count is bounded server-side by relevance and a token budget — there is no top_k.",
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Search Context Engine"
+      },
+      "description": "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id, which equals the job_id from grill_ingest); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k. The response includes a `scope` object identifying which project was searched — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
       "inputSchema": {
-        "type": "object",
         "properties": {
-          "query": {
-            "type": "string",
-            "description": "Natural-language search query."
-          },
           "doc_filter": {
-            "type": "string",
-            "description": "Optional doc_id to restrict search to a single document. When set, routes to the searchInDoc endpoint."
+            "description": "Optional doc_id to restrict search to a single document. When set, routes to the searchInDoc endpoint.",
+            "type": "string"
           },
           "exclude_doc_ids": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "Doc ids to exclude from results. Useful in agent loops to avoid re-citing docs already shown. Max 100."
-          },
-          "return_assets": {
-            "type": "boolean",
-            "description": "Return the cited documents' figures/tables in the `assets` output field (keyed by doc_id; images are base64 data URIs)."
-          },
-          "return_page_images": {
-            "type": "boolean",
-            "description": "DEPRECATED / not available — no-op today. Full-page screenshots are not returned inline."
-          },
-          "token": {
-            "type": "string",
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
+            "description": "Doc ids to exclude from results. Useful in agent loops to avoid re-citing docs already shown. Max 100.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "project_id": {
-            "type": "string",
-            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var."
+            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Natural-language search query.",
+            "type": "string"
+          },
+          "return_assets": {
+            "description": "Return the cited documents' figures/tables in the `assets` output field (keyed by doc_id; images are base64 data URIs).",
+            "type": "boolean"
+          },
+          "return_page_images": {
+            "description": "DEPRECATED / not available — no-op today. Full-page screenshots are not returned inline.",
+            "type": "boolean"
+          },
+          "token": {
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "type": "string"
           }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ],
+        "type": "object"
       },
       "outputSchema": {
-        "type": "object",
         "properties": {
-          "context": {
-            "type": "string",
-            "description": "Concatenated chunk text for RAG prompting."
-          },
           "assets": {
-            "type": "object",
-            "description": "Per-doc figures/tables when return_assets=true and at least one cited document has them, keyed by doc_id. Images are base64 data URIs. Absent when no cited document has assets (the API may send null or omit the field; both are treated as absent here)."
+            "description": "Per-doc figures/tables when return_assets=true, keyed by doc_id. Images are base64 data URIs. Omitted when none.",
+            "type": "object"
           },
-          "error": { "type": "string" }
-        }
+          "code": {
+            "description": "Stable machine-readable error classification, present only on errors. One of: missing_token, invalid_input, auth_expired, payment_required, project_protected, forbidden, too_many_jobs, upstream_error, transport_error, parse_error, job_failed, stream_error. Branch on this — never on the prose error string.",
+            "type": "string"
+          },
+          "context": {
+            "description": "Concatenated chunk text for RAG prompting.",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "retry_after_seconds": {
+            "description": "Suggested seconds to wait before retrying when retryable is true (set for too_many_jobs backpressure).",
+            "type": "integer"
+          },
+          "retryable": {
+            "description": "True only for transient errors safe to retry: too_many_jobs, transport_error, stream_error, and 5xx upstream_error. When true, wait retry_after_seconds (if present) then retry the SAME call. Every other code is terminal — do NOT retry; fix the cause or abort.",
+            "type": "boolean"
+          },
+          "scope": {
+            "description": "Which project this result belongs to. ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results.",
+            "properties": {
+              "hint": {
+                "description": "Ready-to-relay sentence naming the project for the user.",
+                "type": "string"
+              },
+              "is_default": {
+                "description": "True when this is the account's default workspace (no specific project selected).",
+                "type": "boolean"
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "project_name": {
+                "description": "Human-readable project name, e.g. \"Default Workspace\".",
+                "type": "string"
+              },
+              "source": {
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
       }
     },
     {
       "name": "grill_docs_list",
-      "annotations": { "title": "List documents", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
-      "description": "List documents currently ingested into POMA Grill for the authenticated project namespace. The tool follows server-side pagination internally and returns the complete merged list in one response; total_documents is the authoritative full count. If fewer documents than total_documents are returned (safety cap or temporarily unavailable documents), a note field explains the gap — surface it to the user. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.) — use grill_search to retrieve content. Pass a returned doc_id as doc_filter on grill_search to scope a query to a specific document.",
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "List Documents"
+      },
+      "description": "List documents currently ingested into POMA Grill for the authenticated project namespace. The tool follows server-side pagination internally and returns the complete merged list in one response; `total_documents` is the authoritative full count. If fewer documents than total_documents are returned (safety cap or temporarily unavailable documents), a `note` field explains the gap — surface it to the user. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.); document content is retrieved via grill_search. A returned doc_id serves as the doc_filter on grill_search to scope a query to a specific document. The response includes a `scope` object identifying which project these documents belong to — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting the list. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
       "inputSchema": {
-        "type": "object",
         "properties": {
-          "token": {
-            "type": "string",
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
-          },
           "project_id": {
-            "type": "string",
-            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var."
+            "description": "Project ID to use when authenticating with an account-level API key. Not needed with a project API key. Falls back to POMA_PROJECT_ID env var.",
+            "type": "string"
+          },
+          "token": {
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "type": "string"
           }
-        }
+        },
+        "type": "object"
       },
       "outputSchema": {
-        "type": "object",
         "properties": {
-          "documents":       { "type": "array" },
-          "namespace":       { "type": "string" },
-          "total_documents": { "type": "integer" },
-          "note":            { "type": "string", "description": "Present only when the returned documents are fewer than total_documents (internal pagination cap reached, a follow-up page failed, or some documents were temporarily unavailable). Explains the gap." },
-          "error":           { "type": "string" }
-        }
+          "code": {
+            "description": "Stable machine-readable error classification, present only on errors. One of: missing_token, invalid_input, auth_expired, payment_required, project_protected, forbidden, too_many_jobs, upstream_error, transport_error, parse_error, job_failed, stream_error. Branch on this — never on the prose error string.",
+            "type": "string"
+          },
+          "documents": {
+            "type": "array"
+          },
+          "error": {
+            "type": "string"
+          },
+          "namespace": {
+            "type": "string"
+          },
+          "note": {
+            "description": "Present only when the returned documents are fewer than total_documents (internal pagination cap reached, a follow-up page failed, or some documents were temporarily unavailable). Explains the gap.",
+            "type": "string"
+          },
+          "retry_after_seconds": {
+            "description": "Suggested seconds to wait before retrying when retryable is true (set for too_many_jobs backpressure).",
+            "type": "integer"
+          },
+          "retryable": {
+            "description": "True only for transient errors safe to retry: too_many_jobs, transport_error, stream_error, and 5xx upstream_error. When true, wait retry_after_seconds (if present) then retry the SAME call. Every other code is terminal — do NOT retry; fix the cause or abort.",
+            "type": "boolean"
+          },
+          "scope": {
+            "description": "Which project this result belongs to. ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results.",
+            "properties": {
+              "hint": {
+                "description": "Ready-to-relay sentence naming the project for the user.",
+                "type": "string"
+              },
+              "is_default": {
+                "description": "True when this is the account's default workspace (no specific project selected).",
+                "type": "boolean"
+              },
+              "namespace": {
+                "type": "string"
+              },
+              "project_id": {
+                "type": "string"
+              },
+              "project_name": {
+                "description": "Human-readable project name, e.g. \"Default Workspace\".",
+                "type": "string"
+              },
+              "source": {
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "total_documents": {
+            "type": "integer"
+          }
+        },
+        "type": "object"
       }
     },
     {
       "name": "grill_projects",
-      "annotations": { "title": "List projects", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false },
-      "description": "List your accessible projects. Returns project IDs, names, product types, and protection status. Use this to find the project_id for a project by name before calling other Grill tools.",
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "List Projects"
+      },
+      "description": "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
       "inputSchema": {
-        "type": "object",
         "properties": {
-          "token": {
-            "type": "string",
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override."
-          },
           "product": {
-            "type": "string",
-            "enum": ["grill", "primecut"],
-            "description": "Filter by product type. If omitted, returns all projects."
+            "description": "Filter by product type. If omitted, returns all projects.",
+            "enum": [
+              "grill",
+              "primecut"
+            ],
+            "type": "string"
+          },
+          "token": {
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "type": "string"
           }
-        }
+        },
+        "type": "object"
       },
       "outputSchema": {
-        "type": "object",
         "properties": {
-          "projects": { "type": "string", "description": "Human-readable list of accessible projects with IDs, names, products, and protection status." },
-          "error": { "type": "string" }
-        }
+          "code": {
+            "description": "Stable machine-readable error classification, present only on errors. One of: missing_token, invalid_input, auth_expired, payment_required, project_protected, forbidden, too_many_jobs, upstream_error, transport_error, parse_error, job_failed, stream_error. Branch on this — never on the prose error string.",
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "projects": {
+            "description": "Human-readable list of accessible projects with IDs, names, products, and protection status.",
+            "type": "string"
+          },
+          "retry_after_seconds": {
+            "description": "Suggested seconds to wait before retrying when retryable is true (set for too_many_jobs backpressure).",
+            "type": "integer"
+          },
+          "retryable": {
+            "description": "True only for transient errors safe to retry: too_many_jobs, transport_error, stream_error, and 5xx upstream_error. When true, wait retry_after_seconds (if present) then retry the SAME call. Every other code is terminal — do NOT retry; fix the cause or abort.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
       }
     }
   ]

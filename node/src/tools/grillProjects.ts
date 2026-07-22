@@ -1,5 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { errorResult, getToken, interpretAuthError, successResult, type ToolContext } from "../common.js";
+import { codedError, ErrorCode, getToken, interpretAuthError, successResult, type ToolContext } from "../common.js";
 import { GrillClient } from "../client/grillClient.js";
 
 interface ProjectInfo {
@@ -16,7 +16,7 @@ export async function grillProjects(
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return errorResult("token is required (provide token or set POMA_API_KEY on the server)");
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_API_KEY on the server)");
   }
 
   const product =
@@ -29,14 +29,16 @@ export async function grillProjects(
     res = await client.listProjects(product);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return errorResult(`grill projects: ${msg}`);
+    return codedError(ErrorCode.TransportError, `grill projects: ${msg}`);
   }
 
   const authErr = interpretAuthError(args.token, res.status, res.body, "grill projects");
-  if (authErr) return errorResult(authErr);
+  if (authErr) return codedError(authErr.code, authErr.message);
   const text = new TextDecoder("utf-8").decode(res.body);
   if (res.status !== 200) {
-    return errorResult(`grill projects: HTTP ${res.status}: ${text}`);
+    return codedError(ErrorCode.UpstreamError, `grill projects: HTTP ${res.status}: ${text}`, {
+      httpStatus: res.status,
+    });
   }
 
   let projects: ProjectInfo[];
@@ -52,11 +54,11 @@ export async function grillProjects(
     ) {
       projects = (parsed as Record<string, unknown>).projects as ProjectInfo[];
     } else {
-      return errorResult(`grill projects: unexpected response shape: ${text}`);
+      return codedError(ErrorCode.ParseError, `grill projects: unexpected response shape: ${text}`);
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return errorResult(`grill projects: parse response: ${msg}`);
+    return codedError(ErrorCode.ParseError, `grill projects: parse response: ${msg}`);
   }
 
   if (projects.length === 0) {

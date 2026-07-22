@@ -1,6 +1,16 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { errorResult, getProjectID, getToken, interpretAuthError, successResult } from "../common.js";
+import {
+  codedError,
+  ErrorCode,
+  getProjectID,
+  getToken,
+  interpretAuthError,
+  projectIDSource,
+  successResult,
+  type ToolContext,
+} from "../common.js";
 import { GrillClient } from "../client/grillClient.js";
+import { resolveScope, scopeFields } from "../scope.js";
 
 interface SearchRequest {
   query: string;
@@ -23,15 +33,15 @@ function buildBody(args: Record<string, unknown>, withDocFilter: boolean): Searc
 
 export async function grillSearch(
   args: Record<string, unknown>,
-  _ctx: import("../common.js").ToolContext,
+  _ctx: ToolContext,
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return errorResult("token is required (provide token or set POMA_API_KEY on the server)");
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_API_KEY on the server)");
   }
   const query = typeof args.query === "string" ? args.query : "";
   if (query === "") {
-    return errorResult("query is required");
+    return codedError(ErrorCode.InvalidInput, "query is required");
   }
 
   const projectID = getProjectID(args.project_id);
@@ -40,12 +50,18 @@ export async function grillSearch(
   const path = docFilter !== "" ? "/grill/searchInDoc" : "/grill/search";
   const body = buildBody(args, docFilter !== "");
 
-  const res = await client.doJSON("POST", path, body);
+  let res;
+  try {
+    res = await client.doJSON("POST", path, body);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return codedError(ErrorCode.TransportError, msg);
+  }
   const authErr = interpretAuthError(args.token, res.status, res.body, "grill search");
-  if (authErr) return errorResult(authErr);
+  if (authErr) return codedError(authErr.code, authErr.message);
   if (res.status !== 200) {
     const text = new TextDecoder("utf-8").decode(res.body);
-    return errorResult(`grill search: HTTP ${res.status}: ${text}`);
+    return codedError(ErrorCode.UpstreamError, `grill search: HTTP ${res.status}: ${text}`, { httpStatus: res.status });
   }
 
   let parsed: { context?: string; assets?: Record<string, unknown> | null };
@@ -56,7 +72,7 @@ export async function grillSearch(
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return errorResult(`grill search: parse response: ${msg}`);
+    return codedError(ErrorCode.ParseError, `grill search: parse response: ${msg}`);
   }
 
   // Surface return_assets figures/tables (keyed by doc_id; images are base64
@@ -64,12 +80,16 @@ export async function grillSearch(
   // structured output matches the Go variant's `omitzero` map byte-for-byte on
   // every upstream shape: grill emits `assets: null` when there are no figures,
   // which api/go's `omitempty` then collapses to absent — either way we drop it.
-  const out: { context: string; assets?: Record<string, unknown> } = {
+  const out: { context: string; assets?: Record<string, unknown>; scope?: Record<string, unknown> } = {
     context: parsed.context ?? "",
   };
   if (parsed.assets !== undefined && parsed.assets !== null) {
     out.assets = parsed.assets;
   }
+  const { source } = projectIDSource(args.project_id);
+  const scope = await resolveScope(client, token, projectID, "", source);
+  const scopeOut = scopeFields(scope);
+  if (scopeOut) out.scope = scopeOut;
   // Use the context string (the prompt-ready RAG block) as the text content so
   // the assets payload — which can carry large base64 image data URIs — isn't
   // duplicated into the text block alongside structuredContent.

@@ -1,5 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { errorResult, getToken, successResult, type ToolContext } from "../common.js";
+import { codedError, ErrorCode, getToken, makeGrillError, successResult, toolError, type ToolContext } from "../common.js";
 import { GrillClient } from "../client/grillClient.js";
 import { streamJobStatus, type JobStatusFull } from "../client/statusStream.js";
 
@@ -9,11 +9,11 @@ export async function grillIngestResume(
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return errorResult("token is required (provide token or set POMA_API_KEY on the server)");
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_API_KEY on the server)");
   }
   const jobID = typeof args.job_id === "string" ? args.job_id : "";
   if (jobID === "") {
-    return errorResult("job_id is required");
+    return codedError(ErrorCode.InvalidInput, "job_id is required");
   }
 
   const client = new GrillClient(token); // project_id not needed for status API
@@ -37,18 +37,14 @@ export async function grillIngestResume(
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return errorResult(`status stream failed: ${msg}`);
+    return toolError(makeGrillError(ErrorCode.StreamError, `status stream failed: ${msg}`), { job_id: jobID, events });
   }
 
   if (events.length > 0) {
     const last = events[events.length - 1]!;
     if (last.status === "failed") {
       const message = last.error ? `job failed: ${last.error}` : "job failed";
-      return {
-        content: [{ type: "text", text: message }],
-        structuredContent: { job_id: jobID, events, error: message },
-        isError: true,
-      };
+      return toolError(makeGrillError(ErrorCode.JobFailed, message), { job_id: jobID, events });
     }
   }
 

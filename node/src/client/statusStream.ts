@@ -112,15 +112,38 @@ export async function streamJobStatus(
 }
 
 // peekJobStatus fetches a single non-streaming status snapshot for the given job.
-export async function peekJobStatus(client: GrillClient, jobID: string): Promise<JobStatusFull> {
+//
+// The returned httpStatus is the upstream HTTP status code, or 0 when the error
+// originates before/without an HTTP response (network/client error) — callers
+// need this to classify the error correctly: 0 is a transport error, a non-2xx
+// status is an upstream error (retryable only at 5xx), and 200 with an error is
+// a parse error. Collapsing all three would misclassify a permanent 4xx (e.g.
+// job not found) as a transient transport error. Mirrors Go's peekJobStatus.
+export interface PeekResult {
+  status: JobStatusFull | null;
+  httpStatus: number;
+  error?: string;
+}
+
+export async function peekJobStatus(client: GrillClient, jobID: string): Promise<PeekResult> {
   const url = trimRightSlash(apiBaseURL()) + "/jobs/" + jobPathSegment(jobID) + "/status";
   const headers: Record<string, string> = {};
   if (client.authToken !== "") headers.Authorization = `Bearer ${client.authToken}`;
 
-  const res = await fetch(url, { method: "GET", headers });
+  let res: Response;
+  try {
+    res = await fetch(url, { method: "GET", headers });
+  } catch (err) {
+    // Network/client error reaching the status endpoint — no HTTP response.
+    return { status: null, httpStatus: 0, error: err instanceof Error ? err.message : String(err) };
+  }
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`job status: HTTP ${res.status}: ${text}`);
+    return { status: null, httpStatus: res.status, error: `job status: HTTP ${res.status}: ${text}` };
   }
-  return JSON.parse(text) as JobStatusFull;
+  try {
+    return { status: JSON.parse(text) as JobStatusFull, httpStatus: res.status };
+  } catch (err) {
+    return { status: null, httpStatus: res.status, error: err instanceof Error ? err.message : String(err) };
+  }
 }

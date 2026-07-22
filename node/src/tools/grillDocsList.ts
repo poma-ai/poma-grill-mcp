@@ -1,6 +1,19 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { errorResult, getProjectID, getToken, interpretAuthError, successResult, type ToolContext } from "../common.js";
+import {
+  codedError,
+  ErrorCode,
+  getProjectID,
+  getToken,
+  type GrillError,
+  interpretAuthError,
+  makeGrillError,
+  projectIDSource,
+  successResult,
+  toolError,
+  type ToolContext,
+} from "../common.js";
 import { GrillClient } from "../client/grillClient.js";
+import { resolveScope, scopeFields } from "../scope.js";
 
 // grillDocsMaxPages caps transparent auto-paging: the tool follows next_cursor
 // for at most this many pages per call, then returns what it has accumulated
@@ -72,16 +85,16 @@ export async function grillDocsList(
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return errorResult("token is required (provide token or set POMA_API_KEY on the server)");
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_API_KEY on the server)");
   }
 
   const projectID = getProjectID(args.project_id);
   const client = new GrillClient(token, projectID);
 
-  // Fetches and parses one page. On failure returns an error message plus
+  // Fetches and parses one page. On failure returns a structured error plus
   // whether it is an auth/billing failure — which is fatal, not a transient
-  // paging hiccup, and must abort the whole call.
-  const fetchPage = async (cursor: string): Promise<GrillDocsPage | { errMsg: string; auth: boolean }> => {
+  // paging hiccup, and must abort the whole call even mid-loop.
+  const fetchPage = async (cursor: string): Promise<GrillDocsPage | { err: GrillError; auth: boolean }> => {
     const base = `/grill/docs?limit=${grillDocsPageLimit}`;
     const path = cursor === "" ? base : `${base}&cursor=${encodeURIComponent(cursor)}`;
     let res;
@@ -89,21 +102,26 @@ export async function grillDocsList(
       res = await client.doGet(path);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { errMsg: `grill docs list: ${msg}`, auth: false };
+      return { err: makeGrillError(ErrorCode.TransportError, `grill docs list: ${msg}`), auth: false };
     }
 
     const authErr = interpretAuthError(args.token, res.status, res.body, "grill docs list");
-    if (authErr) return { errMsg: authErr, auth: true };
+    if (authErr) return { err: makeGrillError(authErr.code, authErr.message), auth: true };
     const text = new TextDecoder("utf-8").decode(res.body);
     if (res.status !== 200) {
-      return { errMsg: `grill docs list: HTTP ${res.status}: ${text}`, auth: false };
+      return {
+        err: makeGrillError(ErrorCode.UpstreamError, `grill docs list: HTTP ${res.status}: ${text}`, {
+          httpStatus: res.status,
+        }),
+        auth: false,
+      };
     }
 
     try {
       return parseDocsPage(JSON.parse(text) as Record<string, unknown>);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return { errMsg: `grill docs list: parse response: ${msg}`, auth: false };
+      return { err: makeGrillError(ErrorCode.ParseError, `grill docs list: parse response: ${msg}`), auth: false };
     }
   };
 
@@ -117,15 +135,15 @@ export async function grillDocsList(
 
   for (let page = 0; page < grillDocsMaxPages; page++) {
     const result = await fetchPage(cursor);
-    if ("errMsg" in result) {
+    if ("err" in result) {
       // An auth/billing failure is not transient: the credential is bad,
       // expired, or forbidden and every further page would fail the same way.
-      // Surface the actionable message as a hard error on any page, rather than
-      // burying it in a note.
-      if (page === 0 || result.auth) return errorResult(result.errMsg);
+      // Surface the actionable structured error as a hard error on any page,
+      // rather than burying it in a note.
+      if (page === 0 || result.auth) return toolError(result.err);
       // Keep the pages already fetched; surface the gap in the note.
       truncated = true;
-      pagingErr = result.errMsg;
+      pagingErr = result.err.error;
       break;
     }
     documents.push(...result.documents);
@@ -141,10 +159,14 @@ export async function grillDocsList(
   if (total === 0) total = documents.length; // pre-pagination API always sends total_documents == len(documents)
 
   const note = grillDocsListNote(documents.length, total, truncated, degraded, pagingErr);
+  const { source } = projectIDSource(args.project_id);
+  const scope = await resolveScope(client, token, projectID, namespace, source);
+  const scopeOut = scopeFields(scope);
   return successResult({
     documents,
     ...(namespace !== "" ? { namespace } : {}),
     total_documents: total,
     ...(note !== "" ? { note } : {}),
+    ...(scopeOut ? { scope: scopeOut } : {}),
   });
 }
