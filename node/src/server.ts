@@ -62,6 +62,7 @@ export function createServer(): Server {
       description: t.description,
       inputSchema: t.inputSchema,
       ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
+      ...(t.annotations ? { annotations: t.annotations } : {}),
     })),
   }));
 

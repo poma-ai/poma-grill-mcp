@@ -2,9 +2,11 @@
   "manifest_version": "0.3",
   "name": "poma-grill-mcp",
   "display_name": "POMA Grill",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MCP server for the POMA Grill context engine API",
   "long_description": "Ingest documents and run semantic search against the POMA Grill context engine directly from your desktop MCP host. Provides ingest (and variants), job status, search, and explain tools for RAG workflows.",
+  "icon": "icon.png",
+  "privacy_policies": ["https://www.poma-ai.com/security"],
   "author": {
     "name": "POMA AI",
     "url": "https://github.com/poma-ai/poma-grill-mcp"

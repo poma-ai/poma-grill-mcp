@@ -7,6 +7,7 @@ export interface ToolDefinition {
   description: string;
   inputSchema: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
 }
 
 interface SchemasFile {
