@@ -1,8 +1,21 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { errorResult, getProjectID, getToken, interpretAuthError, interpretTooManyJobs, successResult, type ToolContext } from "../common.js";
+import {
+  codedError,
+  ErrorCode,
+  getProjectID,
+  getToken,
+  interpretAuthError,
+  interpretTooManyJobs,
+  makeGrillError,
+  projectIDSource,
+  successResult,
+  toolError,
+  type ToolContext,
+} from "../common.js";
 import { GrillClient, parseJob } from "../client/grillClient.js";
 import { resolveIngestPayload } from "../client/ingestPayload.js";
 import { streamJobStatus, type JobStatusFull } from "../client/statusStream.js";
+import { resolveScope, scopeFields } from "../scope.js";
 
 export async function grillIngestSync(
   args: Record<string, unknown>,
@@ -10,7 +23,7 @@ export async function grillIngestSync(
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return errorResult("token is required (provide token or set POMA_API_KEY on the server)");
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_API_KEY on the server)");
   }
 
   let resolved;
@@ -21,34 +34,31 @@ export async function grillIngestSync(
       filename: typeof args.filename === "string" ? args.filename : undefined,
     });
   } catch (err) {
-    return errorResult(err instanceof Error ? err.message : String(err));
+    return codedError(ErrorCode.InvalidInput, err instanceof Error ? err.message : String(err));
   }
 
   const projectID = getProjectID(args.project_id);
   const client = new GrillClient(token, projectID);
   const ingestRes = await client.ingestRaw(resolved.data, resolved.filename);
+
   const authErr = interpretAuthError(args.token, ingestRes.status, ingestRes.body, "grill ingest");
-  if (authErr) return errorResult(authErr);
+  if (authErr) return codedError(authErr.code, authErr.message);
   const throttle = interpretTooManyJobs(ingestRes.status, ingestRes.body);
   if (throttle.ok) {
-    return {
-      content: [{ type: "text", text: throttle.message }],
-      structuredContent: {
-        error: throttle.message,
-        retryable: true,
-        retry_after_seconds: throttle.retryAfterSeconds,
-      },
-      isError: true,
-    };
+    return toolError(
+      makeGrillError(ErrorCode.TooManyJobs, throttle.message, { retryAfterSeconds: throttle.retryAfterSeconds }),
+    );
   }
   if (ingestRes.status !== 201) {
     const text = new TextDecoder("utf-8").decode(ingestRes.body);
-    return errorResult(`grill ingest: HTTP ${ingestRes.status}: ${text}`);
+    return codedError(ErrorCode.UpstreamError, `grill ingest: HTTP ${ingestRes.status}: ${text}`, {
+      httpStatus: ingestRes.status,
+    });
   }
   const job = parseJob(ingestRes.body);
   if (!job) {
     const text = new TextDecoder("utf-8").decode(ingestRes.body);
-    return errorResult(`grill ingest: could not parse job_id from response: ${text}`);
+    return codedError(ErrorCode.ParseError, `grill ingest: could not parse job_id from response: ${text}`);
   }
 
   const events: JobStatusFull[] = [];
@@ -71,20 +81,22 @@ export async function grillIngestSync(
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return errorResult(`status stream failed: ${msg}`);
+    return toolError(makeGrillError(ErrorCode.StreamError, `status stream failed: ${msg}`), {
+      job_id: job.job_id,
+      events,
+    });
   }
 
   if (events.length > 0) {
     const last = events[events.length - 1]!;
     if (last.status === "failed") {
       const message = last.error ? `job failed: ${last.error}` : "job failed";
-      return {
-        content: [{ type: "text", text: message }],
-        structuredContent: { job_id: job.job_id, events, error: message },
-        isError: true,
-      };
+      return toolError(makeGrillError(ErrorCode.JobFailed, message), { job_id: job.job_id, events });
     }
   }
 
-  return successResult({ job_id: job.job_id, events });
+  const { source } = projectIDSource(args.project_id);
+  const scope = await resolveScope(client, token, projectID, "", source);
+  const scopeOut = scopeFields(scope);
+  return successResult({ job_id: job.job_id, events, ...(scopeOut ? { scope: scopeOut } : {}) });
 }

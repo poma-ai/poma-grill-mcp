@@ -9,7 +9,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { loadToolDefinitions, type ToolDefinition } from "./schemas.js";
-import { errorResult, type ToolContext, type ToolHandler } from "./common.js";
+import { codedError, ErrorCode, type ToolContext, type ToolHandler } from "./common.js";
 
 // Resolve the package version from package.json so MCP serverInfo.version
 // tracks the npm release. Works in dev (../package.json from src/) and built
@@ -62,6 +62,7 @@ export function createServer(): Server {
       description: t.description,
       inputSchema: t.inputSchema,
       ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
+      ...(t.annotations ? { annotations: t.annotations } : {}),
     })),
   }));
 
@@ -69,7 +70,7 @@ export function createServer(): Server {
     const { name, arguments: args, _meta } = request.params;
     const handler = handlers[name];
     if (!handler) {
-      return errorResult(`unknown tool: ${name}`);
+      return codedError(ErrorCode.InvalidInput, `unknown tool: ${name}`);
     }
 
     const progressToken = _meta?.progressToken;

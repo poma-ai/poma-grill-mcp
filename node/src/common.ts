@@ -34,6 +34,17 @@ export function getProjectID(arg: unknown): string {
   return process.env.POMA_PROJECT_ID ?? "";
 }
 
+/**
+ * Resolves the project ID and reports where it came from, for the human-readable
+ * scope hint. Mirrors Go's projectIDSource.
+ */
+export function projectIDSource(arg: unknown): { id: string; source: string } {
+  if (typeof arg === "string" && arg !== "") return { id: arg, source: "project_id argument" };
+  const env = process.env.POMA_PROJECT_ID;
+  if (env && env !== "") return { id: env, source: "POMA_PROJECT_ID env var" };
+  return { id: "", source: "account default (no project_id set)" };
+}
+
 function trimRight(s: string, ch: string): string {
   let i = s.length;
   while (i > 0 && s[i - 1] === ch) i--;
@@ -62,12 +73,111 @@ export function statusAPIBaseURL(): string {
   return DEFAULT_API_BASE_URL + DEFAULT_STATUS_PREFIX;
 }
 
-export function errorResult(message: string): CallToolResult {
+// Stable machine-readable error codes emitted alongside the human-readable
+// error string on every grill tool error. Clients branch on these (and on
+// retryable), never on the prose message. Mirrors go/tools/common.go.
+export const ErrorCode = {
+  MissingToken: "missing_token",
+  InvalidInput: "invalid_input",
+  AuthExpired: "auth_expired",
+  PaymentRequired: "payment_required",
+  ProjectProtected: "project_protected",
+  Forbidden: "forbidden",
+  TooManyJobs: "too_many_jobs",
+  UpstreamError: "upstream_error",
+  TransportError: "transport_error",
+  ParseError: "parse_error",
+  JobFailed: "job_failed",
+  StreamError: "stream_error",
+} as const;
+
+/**
+ * Single source of truth for the taxonomy's retry contract: true only for
+ * too_many_jobs, transport_error, stream_error, and upstream_error when
+ * httpStatus is 5xx. Pass httpStatus 0 for codes that don't depend on it.
+ * Mirrors go/tools/common.go isRetryableCode.
+ */
+export function isRetryableCode(code: string, httpStatus = 0): boolean {
+  switch (code) {
+    case ErrorCode.TooManyJobs:
+    case ErrorCode.TransportError:
+    case ErrorCode.StreamError:
+      return true;
+    case ErrorCode.UpstreamError:
+      return httpStatus >= 500;
+    default:
+      return false;
+  }
+}
+
+// The shared error envelope promoted to the top level of every grill tool
+// output. `retryable`/`retry_after_seconds` are additive and omitted (matching
+// Go's omitempty) unless set.
+export interface GrillError {
+  error: string;
+  code: string;
+  retryable?: boolean;
+  retry_after_seconds?: number;
+}
+
+/**
+ * Builds a GrillError, deriving `retryable` from the taxonomy (isRetryableCode)
+ * so no call site can drift from the retry contract. Pass httpStatus for
+ * upstream_error (retryable only at 5xx) and retryAfterSeconds for too_many_jobs.
+ */
+export function makeGrillError(
+  code: string,
+  message: string,
+  opts: { httpStatus?: number; retryAfterSeconds?: number } = {},
+): GrillError {
+  const ge: GrillError = { error: message, code };
+  if (isRetryableCode(code, opts.httpStatus ?? 0)) ge.retryable = true;
+  if (opts.retryAfterSeconds && opts.retryAfterSeconds > 0) {
+    ge.retry_after_seconds = opts.retryAfterSeconds;
+  }
+  return ge;
+}
+
+/**
+ * Serializes a GrillError to plain fields with omitempty semantics (drop
+ * retryable when false, retry_after_seconds when 0) for embedding into a
+ * structuredContent object or a per-item result entry.
+ */
+export function grillErrorFields(ge: GrillError): Record<string, unknown> {
+  const o: Record<string, unknown> = { error: ge.error, code: ge.code };
+  if (ge.retryable) o.retryable = true;
+  if (ge.retry_after_seconds && ge.retry_after_seconds > 0) {
+    o.retry_after_seconds = ge.retry_after_seconds;
+  }
+  return o;
+}
+
+/**
+ * Builds an error CallToolResult carrying the structured envelope. `extra`
+ * merges additional top-level fields (e.g. job_id, events) into
+ * structuredContent alongside the promoted error fields.
+ */
+export function toolError(
+  ge: GrillError,
+  extra: Record<string, unknown> = {},
+): CallToolResult {
   return {
-    content: [{ type: "text", text: message }],
-    structuredContent: { error: message },
+    content: [{ type: "text", text: ge.error }],
+    structuredContent: { ...extra, ...grillErrorFields(ge) },
     isError: true,
   };
+}
+
+/**
+ * Convenience for the common "code + message" error result. Equivalent to
+ * toolError(makeGrillError(code, message, opts), extra).
+ */
+export function codedError(
+  code: string,
+  message: string,
+  opts: { httpStatus?: number; retryAfterSeconds?: number; extra?: Record<string, unknown> } = {},
+): CallToolResult {
+  return toolError(makeGrillError(code, message, opts), opts.extra ?? {});
 }
 
 /** Describes which credential was used, for error messages. */
@@ -78,31 +188,37 @@ export function tokenSource(tokenArg: unknown): string {
 }
 
 /**
- * Returns a user-friendly error string for 401/403 API responses.
- * Returns undefined if the status code is not an auth error.
+ * Returns a user-friendly error string plus a stable error code for 401/402/403
+ * API responses. Returns undefined if the status code is not an auth/billing
+ * error (including capacity/quota 403s, handled by interpretTooManyJobs).
+ * Mirrors go/tools/common.go interpretAuthError.
  */
 export function interpretAuthError(
   tokenArg: unknown,
   statusCode: number,
   body: Uint8Array,
   operation: string,
-): string | undefined {
+): { message: string; code: string } | undefined {
   if (statusCode !== 401 && statusCode !== 402 && statusCode !== 403) return undefined;
 
   const src = tokenSource(tokenArg);
 
   if (statusCode === 402) {
-    return (
-      `${operation}: credits exceeded (HTTP 402). The account associated with the token provided via ${src} has no remaining credits. ` +
-      `Visit https://console.poma-ai.com to check your usage and upgrade your plan.`
-    );
+    return {
+      message:
+        `${operation}: credits exceeded (HTTP 402). The account associated with the token provided via ${src} has no remaining credits. ` +
+        `Visit https://console.poma-ai.com to check your usage and upgrade your plan.`,
+      code: ErrorCode.PaymentRequired,
+    };
   }
 
   if (statusCode === 401) {
-    return (
-      `${operation}: authentication failed (HTTP 401). The token provided via ${src} is invalid, expired, or malformed. ` +
-      `Generate a valid API key at https://console.poma-ai.com and set it as POMA_API_KEY or pass it as the token argument.`
-    );
+    return {
+      message:
+        `${operation}: authentication failed (HTTP 401). The token provided via ${src} is invalid, expired, or malformed. ` +
+        `Generate a valid API key at https://console.poma-ai.com and set it as POMA_API_KEY or pass it as the token argument.`,
+      code: ErrorCode.AuthExpired,
+    };
   }
 
   // 403 — try to parse the JSON error envelope for a specific message.
@@ -136,9 +252,9 @@ export function interpretAuthError(
           // Not an auth error — this is a capacity/quota limit.
           return undefined;
         case "project_protected":
-          return projectProtectedMsg;
+          return { message: projectProtectedMsg, code: ErrorCode.ProjectProtected };
         case "forbidden":
-          return forbiddenMsg;
+          return { message: forbiddenMsg, code: ErrorCode.Forbidden };
       }
     } else if (typeof errResp.code === "string") {
       switch (errResp.code) {
@@ -147,9 +263,9 @@ export function interpretAuthError(
           // Not an auth error — this is a capacity/quota limit.
           return undefined;
         case "project_protected":
-          return projectProtectedMsg;
+          return { message: projectProtectedMsg, code: ErrorCode.ProjectProtected };
         case "forbidden":
-          return forbiddenMsg;
+          return { message: forbiddenMsg, code: ErrorCode.Forbidden };
       }
     }
   } catch {
@@ -161,7 +277,10 @@ export function interpretAuthError(
     return undefined;
   }
 
-  return `${operation}: forbidden (HTTP 403). The token provided via ${src} was rejected. Response: ${text}`;
+  return {
+    message: `${operation}: forbidden (HTTP 403). The token provided via ${src} was rejected. Response: ${text}`,
+    code: ErrorCode.Forbidden,
+  };
 }
 
 /**

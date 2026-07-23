@@ -35,6 +35,8 @@ mkdir -p "$STAGE/server"
 
 # 4. Assemble the bundle tree.
 cp "$MCPB_DIR/manifest.json" "$STAGE/manifest.json"
+cp "$MCPB_DIR/icon.png" "$STAGE/icon.png"        # referenced by manifest "icon"
+cp "$MCPB_DIR/README.md" "$STAGE/README.md"      # offline install/usage docs
 cp "$NODE_DIR/package.json" "$STAGE/package.json"
 cp "$NODE_DIR/package-lock.json" "$STAGE/package-lock.json"
 cp -R "$NODE_DIR/dist/." "$STAGE/server/"

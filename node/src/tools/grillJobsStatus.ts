@@ -1,5 +1,13 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { errorResult, getToken, successResult } from "../common.js";
+import {
+  codedError,
+  ErrorCode,
+  getToken,
+  grillErrorFields,
+  makeGrillError,
+  successResult,
+  type ToolContext,
+} from "../common.js";
 import { GrillClient } from "../client/grillClient.js";
 import { isTerminalGrillStatus, peekJobStatus } from "../client/statusStream.js";
 
@@ -8,24 +16,27 @@ interface JobStatusResult {
   status?: string;
   is_terminal: boolean;
   error?: string;
+  code?: string;
+  retryable?: boolean;
+  retry_after_seconds?: number;
 }
 
 const PEEK_CONCURRENCY = 10;
 
 export async function grillJobsStatus(
   args: Record<string, unknown>,
-  _ctx: import("../common.js").ToolContext,
+  _ctx: ToolContext,
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return errorResult("token is required (provide token or set POMA_API_KEY on the server)");
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_API_KEY on the server)");
   }
   const ids = Array.isArray(args.job_ids) ? args.job_ids.map(String) : [];
   if (ids.length === 0) {
-    return errorResult("job_ids is required");
+    return codedError(ErrorCode.InvalidInput, "job_ids is required");
   }
   if (ids.length > 50) {
-    return errorResult("job_ids exceeds limit of 50");
+    return codedError(ErrorCode.InvalidInput, "job_ids exceeds limit of 50");
   }
 
   const client = new GrillClient(token); // project_id not needed for status API
@@ -42,19 +53,37 @@ export async function grillJobsStatus(
           const i = cursor++;
           if (i >= ids.length) return;
           const id = ids[i]!;
-          try {
-            const s = await peekJobStatus(client, id);
-            const terminal = s.is_terminal || isTerminalGrillStatus(s.status);
-            results[i] = {
-              job_id: id,
-              status: s.status,
-              is_terminal: terminal,
-              ...(s.error ? { error: s.error } : {}),
-            };
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            results[i] = { job_id: id, is_terminal: false, error: msg };
+          const peek = await peekJobStatus(client, id);
+          if (peek.status === null) {
+            // Classify like Go: httpStatus 0 = transport (retryable); a non-2xx
+            // status = upstream (retryable only at 5xx); 200-but-parse-fail =
+            // parse_error. A permanent 4xx must NOT read as transient transport.
+            const msg = peek.error ?? "job status: unknown error";
+            let ge;
+            if (peek.httpStatus === 0) {
+              ge = makeGrillError(ErrorCode.TransportError, msg);
+            } else if (peek.httpStatus === 200) {
+              ge = makeGrillError(ErrorCode.ParseError, msg);
+            } else {
+              ge = makeGrillError(ErrorCode.UpstreamError, msg, { httpStatus: peek.httpStatus });
+            }
+            results[i] = { job_id: id, is_terminal: false, ...grillErrorFields(ge) };
+            continue;
           }
+          const s = peek.status;
+          const terminal = s.is_terminal || isTerminalGrillStatus(s.status);
+          const res: JobStatusResult = {
+            job_id: id,
+            status: s.status,
+            is_terminal: terminal,
+            ...(s.error ? { error: s.error } : {}),
+          };
+          if (res.status === "failed" || (res.error && res.error !== "")) {
+            // Terminal job failure (or an error surfaced on a non-terminal
+            // status) — not retryable; fix the source doc.
+            res.code = ErrorCode.JobFailed;
+          }
+          results[i] = res;
         }
       })(),
     );

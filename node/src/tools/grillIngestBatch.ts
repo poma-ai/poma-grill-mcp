@@ -1,12 +1,29 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { errorResult, getProjectID, getToken, interpretAuthError, interpretTooManyJobs, successResult, type ToolContext } from "../common.js";
+import {
+  codedError,
+  ErrorCode,
+  getProjectID,
+  getToken,
+  grillErrorFields,
+  interpretAuthError,
+  interpretTooManyJobs,
+  makeGrillError,
+  projectIDSource,
+  successResult,
+  toolError,
+  type ToolContext,
+} from "../common.js";
 import { GrillClient, parseJob } from "../client/grillClient.js";
 import { resolveIngestPayload } from "../client/ingestPayload.js";
+import { resolveScope, scopeFields } from "../scope.js";
 
 interface BatchResult {
   file_path: string;
   job_id?: string;
   error?: string;
+  code?: string;
+  retryable?: boolean;
+  retry_after_seconds?: number;
   quota_exceed?: boolean;
 }
 
@@ -16,14 +33,14 @@ export async function grillIngestBatch(
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return errorResult("token is required (provide token or set POMA_API_KEY on the server)");
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_API_KEY on the server)");
   }
   const filePaths = Array.isArray(args.file_paths) ? args.file_paths.map(String) : [];
   if (filePaths.length === 0) {
-    return errorResult("file_paths is required");
+    return codedError(ErrorCode.InvalidInput, "file_paths is required");
   }
   if (filePaths.length > 50) {
-    return errorResult("file_paths exceeds limit of 50");
+    return codedError(ErrorCode.InvalidInput, "file_paths exceeds limit of 50");
   }
 
   let concurrency = typeof args.concurrency === "number" ? Math.trunc(args.concurrency) : 0;
@@ -44,45 +61,66 @@ export async function grillIngestBatch(
           const i = cursor++;
           if (i >= filePaths.length) return;
           const fp = filePaths[i]!;
+
+          let resolved;
           try {
-            const resolved = resolveIngestPayload({ file_path: fp });
-            const res = await client.ingestRaw(resolved.data, resolved.filename);
-            {
-              const authErrMsg = interpretAuthError(args.token, res.status, res.body, "grill ingest");
-              if (authErrMsg) {
-                results[i] = { file_path: fp, error: authErrMsg };
-                return;
-              }
-              const throttle = interpretTooManyJobs(res.status, res.body);
-              if (throttle.ok) {
-                // Job-capacity backpressure (HTTP 429 too_many_jobs). Transient —
-                // bucket as quota_exceed so the caller retries once slots free.
-                results[i] = { file_path: fp, error: throttle.message, quota_exceed: true };
-                return;
-              }
-              if (res.status === 403) {
-                // interpretAuthError returned undefined — legacy quota/capacity 403 (older API), not auth.
-                const bodyText = new TextDecoder("utf-8").decode(res.body);
-                results[i] = { file_path: fp, error: `quota exceeded: ${bodyText}`, quota_exceed: true };
-                return;
-              }
-            }
-            if (res.status !== 201) {
-              const text = new TextDecoder("utf-8").decode(res.body);
-              results[i] = { file_path: fp, error: `HTTP ${res.status}: ${text}` };
-              return;
-            }
-            const job = parseJob(res.body);
-            if (!job) {
-              const text = new TextDecoder("utf-8").decode(res.body);
-              results[i] = { file_path: fp, error: `could not parse job_id: ${text}` };
-              return;
-            }
-            results[i] = { file_path: fp, job_id: job.job_id };
+            resolved = resolveIngestPayload({ file_path: fp });
           } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            results[i] = { file_path: fp, error: msg };
+            // Payload build / arg validation failure — bad input, not transport.
+            const ge = makeGrillError(ErrorCode.InvalidInput, err instanceof Error ? err.message : String(err));
+            results[i] = { file_path: fp, ...grillErrorFields(ge) };
+            continue;
           }
+
+          let res;
+          try {
+            res = await client.ingestRaw(resolved.data, resolved.filename);
+          } catch (err) {
+            // Network/client error reaching the Grill API — transient, retryable.
+            const ge = makeGrillError(ErrorCode.TransportError, err instanceof Error ? err.message : String(err));
+            results[i] = { file_path: fp, ...grillErrorFields(ge) };
+            continue;
+          }
+
+          const authErr = interpretAuthError(args.token, res.status, res.body, "grill ingest");
+          if (authErr) {
+            const ge = makeGrillError(authErr.code, authErr.message);
+            results[i] = { file_path: fp, ...grillErrorFields(ge) };
+            continue;
+          }
+          const throttle = interpretTooManyJobs(res.status, res.body);
+          if (throttle.ok) {
+            // Job-capacity backpressure (HTTP 429 too_many_jobs). Transient —
+            // bucket as quota_exceed so the caller retries once slots free.
+            const ge = makeGrillError(ErrorCode.TooManyJobs, throttle.message, {
+              retryAfterSeconds: throttle.retryAfterSeconds,
+            });
+            results[i] = { file_path: fp, ...grillErrorFields(ge), quota_exceed: true };
+            continue;
+          }
+          if (res.status === 403) {
+            // interpretAuthError returned undefined — legacy quota/capacity 403 (older API), not auth.
+            const bodyText = new TextDecoder("utf-8").decode(res.body);
+            const ge = makeGrillError(ErrorCode.TooManyJobs, `quota exceeded: ${bodyText}`);
+            results[i] = { file_path: fp, ...grillErrorFields(ge), quota_exceed: true };
+            continue;
+          }
+          if (res.status !== 201) {
+            const text = new TextDecoder("utf-8").decode(res.body);
+            const ge = makeGrillError(ErrorCode.UpstreamError, `HTTP ${res.status}: ${text}`, {
+              httpStatus: res.status,
+            });
+            results[i] = { file_path: fp, ...grillErrorFields(ge) };
+            continue;
+          }
+          const job = parseJob(res.body);
+          if (!job) {
+            const text = new TextDecoder("utf-8").decode(res.body);
+            const ge = makeGrillError(ErrorCode.ParseError, `could not parse job_id: ${text}`);
+            results[i] = { file_path: fp, ...grillErrorFields(ge) };
+            continue;
+          }
+          results[i] = { file_path: fp, job_id: job.job_id };
         }
       })(),
     );
@@ -99,23 +137,35 @@ export async function grillIngestBatch(
   }
 
   if (submitted === 0 && quota === 0) {
-    return {
-      content: [{ type: "text", text: `all ${results.length} file(s) failed to submit` }],
-      structuredContent: {
-        results,
-        submitted_count: submitted,
-        failed_count: failed,
-        quota_exceeded_count: quota,
-        error: `all ${results.length} file(s) failed to submit`,
+    // Aggregate rollup: every file failed. Each results[i].code is guaranteed
+    // non-empty here (every result is a failure), so propagate the first one as
+    // the representative top-level code/retryable rather than leaving it empty.
+    // We build the envelope inline instead of via makeGrillError on purpose:
+    // the per-file retryable/retry_after_seconds were already derived from the
+    // taxonomy when each result was created, and retry_after_seconds can't be
+    // recomputed from the code alone — so we forward the per-file values verbatim
+    // rather than re-deriving them here.
+    const message = `all ${results.length} file(s) failed to submit`;
+    const first = results[0]!;
+    return toolError(
+      {
+        error: message,
+        code: first.code ?? ErrorCode.UpstreamError,
+        ...(first.retryable ? { retryable: true } : {}),
+        ...(first.retry_after_seconds ? { retry_after_seconds: first.retry_after_seconds } : {}),
       },
-      isError: true,
-    };
+      { results, submitted_count: submitted, failed_count: failed, quota_exceeded_count: quota },
+    );
   }
 
+  const { source } = projectIDSource(args.project_id);
+  const scope = await resolveScope(client, token, projectID, "", source);
+  const scopeOut = scopeFields(scope);
   return successResult({
     results,
     submitted_count: submitted,
     failed_count: failed,
     quota_exceeded_count: quota,
+    ...(scopeOut ? { scope: scopeOut } : {}),
   });
 }

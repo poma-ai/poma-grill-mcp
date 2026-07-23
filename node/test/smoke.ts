@@ -381,6 +381,140 @@ async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, 
   }
 }
 
+// -- structured error-code + scope tests (offline, against an in-process stub) --
+//
+// Mirrors go/tools/errorcodes_test.go: a 4xx from the status endpoint must be a
+// non-retryable upstream_error (not a transient transport_error), a 5xx must be
+// a retryable upstream_error, and success must omit the error envelope. Also
+// asserts the ported project-scope object appears on search/ingest.
+
+function startErrorStubAPI(): Promise<{ url: string; close: () => Promise<void> }> {
+  const defaultProject = {
+    id: "p1",
+    project_id: "p1",
+    account_id: "acc1",
+    name: "Default Workspace",
+    product: "grill",
+    protected: false,
+    orga_id: "",
+    is_default: true,
+  };
+  const server: Server = createServer((req, res) => {
+    const u = new URL(req.url ?? "/", "http://localhost");
+    res.setHeader("content-type", "application/json");
+    const scenario = (req.headers.authorization ?? "").replace("Bearer ", "");
+
+    // Projects listing — used by scope resolution and grill_projects.
+    if (u.pathname === "/v3/projects") {
+      res.end(JSON.stringify([defaultProject]));
+      return;
+    }
+    // Job status snapshot — scenario selected by token.
+    if (/^\/v3\/jobs\/.+\/status$/.test(u.pathname)) {
+      if (scenario === "js404") {
+        res.statusCode = 404;
+        res.end('{"error":"job not found"}');
+      } else if (scenario === "js503") {
+        res.statusCode = 503;
+        res.end('{"error":"unavailable"}');
+      } else {
+        res.end('{"is_terminal":true,"status":"done"}');
+      }
+      return;
+    }
+    // Search.
+    if (u.pathname === "/v3/grill/search" || u.pathname === "/v3/grill/searchInDoc") {
+      res.end('{"context":"some context","assets":null}');
+      return;
+    }
+    res.statusCode = 404;
+    res.end("{}");
+  });
+  return new Promise((resolveServer) => {
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      resolveServer({
+        url: `http://127.0.0.1:${port}`,
+        close: () => new Promise((res) => server.close(() => res())),
+      });
+    });
+  });
+}
+
+interface EnvelopeContent {
+  error?: string;
+  code?: string;
+  retryable?: boolean;
+  retry_after_seconds?: number;
+  scope?: { project_name?: string; hint?: string; is_default?: boolean };
+  results?: { code?: string; retryable?: boolean; error?: string }[];
+  submitted_count?: number;
+  job_id?: string;
+}
+
+async function callTool(client: MCPClient, name: string, args: Record<string, unknown>): Promise<{ isError: boolean; content: EnvelopeContent }> {
+  const resp = await client.request("tools/call", { name, arguments: args });
+  const result = resp.result as { isError?: boolean; structuredContent?: EnvelopeContent } | undefined;
+  return { isError: result?.isError === true, content: result?.structuredContent ?? {} };
+}
+
+async function errorCodeTests(stubClient: MCPClient, deadClient: MCPClient, noTokenClient: MCPClient): Promise<void> {
+  process.stdout.write("structured error-code + scope tests:\n");
+
+  await stubClient.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "smoke-err", version: "0" } });
+  stubClient.notify("notifications/initialized");
+  await deadClient.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "smoke-dead", version: "0" } });
+  deadClient.notify("notifications/initialized");
+  await noTokenClient.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "smoke-notok", version: "0" } });
+  noTokenClient.notify("notifications/initialized");
+
+  // 1. jobs_status 404 → per-result upstream_error, NOT retryable.
+  {
+    const { content } = await callTool(stubClient, "grill_jobs_status", { token: "js404", job_ids: ["job-1"] });
+    const r = content.results?.[0];
+    const ok = r?.code === "upstream_error" && r?.retryable !== true;
+    record("jobs_status 404 → upstream_error non-retryable", ok, ok ? undefined : JSON.stringify(r));
+  }
+  // 2. jobs_status 503 → per-result upstream_error, retryable.
+  {
+    const { content } = await callTool(stubClient, "grill_jobs_status", { token: "js503", job_ids: ["job-1"] });
+    const r = content.results?.[0];
+    const ok = r?.code === "upstream_error" && r?.retryable === true;
+    record("jobs_status 503 → upstream_error retryable", ok, ok ? undefined : JSON.stringify(r));
+  }
+  // 3. jobs_status 200 success → no error envelope on the result or top level.
+  {
+    const { isError, content } = await callTool(stubClient, "grill_jobs_status", { token: "js200", job_ids: ["job-1"] });
+    const r = content.results?.[0];
+    const ok = !isError && content.error === undefined && r?.code === undefined && r?.error === undefined;
+    record("jobs_status success omits error envelope", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 4. Transport error (server unreachable) → transport_error, retryable.
+  {
+    const { isError, content } = await callTool(deadClient, "grill_projects", { token: "tok" });
+    const ok = isError && content.code === "transport_error" && content.retryable === true;
+    record("projects unreachable → transport_error retryable", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 5. missing_token → code=missing_token (no POMA_API_KEY, no token arg).
+  {
+    const { isError, content } = await callTool(noTokenClient, "grill_search", { query: "hi" });
+    const ok = isError && content.code === "missing_token";
+    record("missing token → missing_token", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 6. batch all-failed aggregate carries a non-empty code (bad path → invalid_input).
+  {
+    const { isError, content } = await callTool(stubClient, "grill_ingest_batch", { token: "js200", file_paths: ["/no/such/file/here.txt"] });
+    const ok = isError && content.code === "invalid_input" && content.results?.[0]?.code === "invalid_input";
+    record("batch all-failed aggregate carries code", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 7. search success carries the project scope object.
+  {
+    const { isError, content } = await callTool(stubClient, "grill_search", { token: "scope1", query: "hi" });
+    const ok = !isError && content.scope?.project_name === "Default Workspace" && (content.scope?.hint ?? "").length > 0;
+    record("search success includes project scope", ok, ok ? undefined : JSON.stringify(content.scope));
+  }
+}
+
 async function main(): Promise<void> {
   if (!existsSync(BINARY)) {
     process.stderr.write(`error: ${BINARY} not found. Run \`npm run build\` first.\n`);
@@ -403,6 +537,29 @@ async function main(): Promise<void> {
   } finally {
     await pagingClient.close();
     await stub.close();
+  }
+
+  // Error-code + scope tests need three clients: one pointed at a live stub, one
+  // pointed at a dead port (transport error), and one with no credentials.
+  const errStub = await startErrorStubAPI();
+  // A closed port: bind, capture the address, close, then point a client at it.
+  const deadURL = await new Promise<string>((res) => {
+    const s = createServer();
+    s.listen(0, "127.0.0.1", () => {
+      const { port } = s.address() as AddressInfo;
+      s.close(() => res(`http://127.0.0.1:${port}`));
+    });
+  });
+  const stubClient = new MCPClient({ POMA_API_BASE_URL: errStub.url, POMA_API_KEY: "" });
+  const deadClient = new MCPClient({ POMA_API_BASE_URL: deadURL, POMA_API_KEY: "" });
+  const noTokenClient = new MCPClient({ POMA_API_BASE_URL: errStub.url, POMA_API_KEY: "" });
+  try {
+    await errorCodeTests(stubClient, deadClient, noTokenClient);
+  } finally {
+    await stubClient.close();
+    await deadClient.close();
+    await noTokenClient.close();
+    await errStub.close();
   }
 
   const passed = results.filter((r) => r.ok).length;
