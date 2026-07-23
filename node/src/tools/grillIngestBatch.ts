@@ -140,6 +140,11 @@ export async function grillIngestBatch(
     // Aggregate rollup: every file failed. Each results[i].code is guaranteed
     // non-empty here (every result is a failure), so propagate the first one as
     // the representative top-level code/retryable rather than leaving it empty.
+    // We build the envelope inline instead of via makeGrillError on purpose:
+    // the per-file retryable/retry_after_seconds were already derived from the
+    // taxonomy when each result was created, and retry_after_seconds can't be
+    // recomputed from the code alone — so we forward the per-file values verbatim
+    // rather than re-deriving them here.
     const message = `all ${results.length} file(s) failed to submit`;
     const first = results[0]!;
     return toolError(

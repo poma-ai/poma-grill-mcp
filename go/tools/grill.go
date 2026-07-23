@@ -93,7 +93,7 @@ var grillIngestTool = &mcp.Tool{
 		// job/doc, so it is not idempotent.
 		Title:           "Ingest Document",
 		DestructiveHint: boolPtr(false),
-		OpenWorldHint:   boolPtr(false),
+		OpenWorldHint:   boolPtr(true),
 	},
 	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop." + errorHandlingGuidance,
 	InputSchema:  grillIngestInputSchema,
@@ -105,7 +105,7 @@ var grillIngestSyncTool = &mcp.Tool{
 	Annotations: &mcp.ToolAnnotations{
 		Title:           "Ingest Document (await completion)",
 		DestructiveHint: boolPtr(false),
-		OpenWorldHint:   boolPtr(false),
+		OpenWorldHint:   boolPtr(true),
 	},
 	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees." + errorHandlingGuidance,
 	InputSchema:  grillIngestInputSchema,
@@ -229,7 +229,7 @@ var grillIngestResumeTool = &mcp.Tool{
 		// create or modify server-side state.
 		Title:         "Resume Ingest Tracking",
 		ReadOnlyHint:  true,
-		OpenWorldHint: boolPtr(false),
+		OpenWorldHint: boolPtr(true),
 	},
 	Description:  "Resume tracking an in-progress POMA Grill ingestion job started by an earlier grill_ingest call. Connects to the status SSE stream for the given job_id and waits until a terminal state (done, failed, grilled, deleted), emitting progress notifications." + errorHandlingGuidance,
 	InputSchema:  grillIngestResumeInputSchema,
@@ -331,7 +331,7 @@ var grillSearchTool = &mcp.Tool{
 	Annotations: &mcp.ToolAnnotations{
 		Title:         "Search Context Engine",
 		ReadOnlyHint:  true,
-		OpenWorldHint: boolPtr(false),
+		OpenWorldHint: boolPtr(true),
 	},
 	Description:  "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id, which equals the job_id from grill_ingest); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k. The response includes a `scope` object identifying which project was searched — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results." + errorHandlingGuidance,
 	InputSchema:  grillSearchInputSchema,
@@ -660,7 +660,7 @@ var grillDocsListTool = &mcp.Tool{
 	Annotations: &mcp.ToolAnnotations{
 		Title:         "List Documents",
 		ReadOnlyHint:  true,
-		OpenWorldHint: boolPtr(false),
+		OpenWorldHint: boolPtr(true),
 	},
 	Description:  "List documents currently ingested into POMA Grill for the authenticated project namespace. The tool follows server-side pagination internally and returns the complete merged list in one response; `total_documents` is the authoritative full count. If fewer documents than total_documents are returned (safety cap or temporarily unavailable documents), a `note` field explains the gap — surface it to the user. Returns metadata only (doc_id, filename, ingested_at, chunk/page counts, etc.); document content is retrieved via grill_search. A returned doc_id serves as the doc_filter on grill_search to scope a query to a specific document. The response includes a `scope` object identifying which project these documents belong to — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting the list." + errorHandlingGuidance,
 	InputSchema:  grillDocsListInputSchema,
@@ -870,7 +870,7 @@ var grillIngestBatchTool = &mcp.Tool{
 	Annotations: &mcp.ToolAnnotations{
 		Title:           "Ingest Documents (batch)",
 		DestructiveHint: boolPtr(false),
-		OpenWorldHint:   boolPtr(false),
+		OpenWorldHint:   boolPtr(true),
 	},
 	Description:  "Ingest multiple files into POMA Grill with controlled upload concurrency (default 5, max 10). Accepts up to 50 file paths. Returns job_ids immediately after uploads complete — does not wait for server-side processing; progress is reported by grill_jobs_status. The response includes a `scope` object identifying which project the documents were ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Free-tier accounts should set concurrency to 1. When the account is at its concurrent-job capacity the API returns HTTP 429 too_many_jobs; those files come back with quota_exceed=true (counted in quota_exceeded_count) — they were NOT ingested. Retry only the quota_exceed files once running jobs finish (poll grill_jobs_status); lower concurrency if it recurs." + errorHandlingGuidance,
 	InputSchema:  grillIngestBatchInputSchema,
@@ -1004,7 +1004,11 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 		// branch is a failure (neither submitted nor quota_exceed), so
 		// results[0].Code is guaranteed non-empty. Use it as the representative
 		// top-level code/retryable so this error site isn't the one place in the
-		// tool that leaves `code` empty.
+		// tool that leaves `code` empty. We forward the per-file
+		// Retryable/RetryAfterSeconds verbatim rather than re-deriving them via
+		// isRetryableCode: they were already derived from the taxonomy when each
+		// result was built, and RetryAfterSeconds can't be recomputed from the
+		// code alone.
 		out.Error = fmt.Sprintf("all %d file(s) failed to submit", len(results))
 		out.Code = results[0].Code
 		out.Retryable = results[0].Retryable
@@ -1053,7 +1057,7 @@ var grillJobsStatusTool = &mcp.Tool{
 	Annotations: &mcp.ToolAnnotations{
 		Title:         "Job Status",
 		ReadOnlyHint:  true,
-		OpenWorldHint: boolPtr(false),
+		OpenWorldHint: boolPtr(true),
 	},
 	Description:  "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming — reporting progress for jobs created by grill_ingest or grill_ingest_batch. pending_count/done_count/failed_count give a quick summary." + errorHandlingGuidance,
 	InputSchema:  grillJobsStatusInputSchema,
@@ -1188,7 +1192,7 @@ var grillProjectsTool = &mcp.Tool{
 	Annotations: &mcp.ToolAnnotations{
 		Title:         "List Projects",
 		ReadOnlyHint:  true,
-		OpenWorldHint: boolPtr(false),
+		OpenWorldHint: boolPtr(true),
 	},
 	Description:  "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools." + errorHandlingGuidance,
 	InputSchema:  grillProjectsInputSchema,
