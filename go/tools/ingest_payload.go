@@ -258,7 +258,8 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 	// Falls back to POMA_PROJECT_ID env var when the header is absent,
 	// allowing server-wide default project scoping for the HTTP upload endpoint.
 	projectID := getProjectID(r.Header.Get("X-Project-ID"))
-	body, st, err := grillIngestData(c, data, filename, projectID)
+	// Forward any X-Labels the caller supplied on the upload request.
+	body, st, err := grillIngestData(c, data, filename, projectID, r.Header.Get("X-Labels"))
 	if err != nil {
 		// Network/client error reaching the Grill API — transient, retryable.
 		writeIngestUploadError(w, http.StatusBadGateway, GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)})

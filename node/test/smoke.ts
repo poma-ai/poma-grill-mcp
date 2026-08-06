@@ -388,7 +388,12 @@ async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, 
 // a retryable upstream_error, and success must omit the error envelope. Also
 // asserts the ported project-scope object appears on search/ingest.
 
-function startErrorStubAPI(): Promise<{ url: string; close: () => Promise<void> }> {
+interface IngestCapture {
+  remoteURL?: string;
+  labels?: string;
+}
+
+function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; close: () => Promise<void> }> {
   const defaultProject = {
     id: "p1",
     project_id: "p1",
@@ -399,6 +404,8 @@ function startErrorStubAPI(): Promise<{ url: string; close: () => Promise<void> 
     orga_id: "",
     is_default: true,
   };
+  // Records the headers the last /v3/grill/ingest request carried, for assertions.
+  const ingest: IngestCapture = {};
   const server: Server = createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://localhost");
     res.setHeader("content-type", "application/json");
@@ -407,6 +414,14 @@ function startErrorStubAPI(): Promise<{ url: string; close: () => Promise<void> 
     // Projects listing — used by scope resolution and grill_projects.
     if (u.pathname === "/v3/projects") {
       res.end(JSON.stringify([defaultProject]));
+      return;
+    }
+    // Ingest — capture X-Remote-URL / X-Labels and return a job_id.
+    if (u.pathname === "/v3/grill/ingest") {
+      ingest.remoteURL = (req.headers["x-remote-url"] as string | undefined) ?? undefined;
+      ingest.labels = (req.headers["x-labels"] as string | undefined) ?? undefined;
+      res.statusCode = 201;
+      res.end('{"job_id":"job-url-1"}');
       return;
     }
     // Job status snapshot — scenario selected by token.
@@ -435,6 +450,7 @@ function startErrorStubAPI(): Promise<{ url: string; close: () => Promise<void> 
       const { port } = server.address() as AddressInfo;
       resolveServer({
         url: `http://127.0.0.1:${port}`,
+        ingest,
         close: () => new Promise((res) => server.close(() => res())),
       });
     });
@@ -458,7 +474,12 @@ async function callTool(client: MCPClient, name: string, args: Record<string, un
   return { isError: result?.isError === true, content: result?.structuredContent ?? {} };
 }
 
-async function errorCodeTests(stubClient: MCPClient, deadClient: MCPClient, noTokenClient: MCPClient): Promise<void> {
+async function errorCodeTests(
+  stubClient: MCPClient,
+  deadClient: MCPClient,
+  noTokenClient: MCPClient,
+  ingest: IngestCapture,
+): Promise<void> {
   process.stdout.write("structured error-code + scope tests:\n");
 
   await stubClient.request("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "smoke-err", version: "0" } });
@@ -513,6 +534,38 @@ async function errorCodeTests(stubClient: MCPClient, deadClient: MCPClient, noTo
     const ok = !isError && content.scope?.project_name === "Default Workspace" && (content.scope?.hint ?? "").length > 0;
     record("search success includes project scope", ok, ok ? undefined : JSON.stringify(content.scope));
   }
+  // 8. URL ingest → sends X-Remote-URL, returns job_id (+ scope).
+  {
+    ingest.remoteURL = undefined;
+    const { isError, content } = await callTool(stubClient, "grill_ingest", { token: "scope1", url: "https://example.com/doc.pdf" });
+    const ok =
+      !isError &&
+      content.job_id === "job-url-1" &&
+      ingest.remoteURL === "https://example.com/doc.pdf" &&
+      content.scope?.project_name === "Default Workspace";
+    record("url ingest sends X-Remote-URL + returns job_id", ok, ok ? undefined : `job_id=${content.job_id} remoteURL=${ingest.remoteURL}`);
+  }
+  // 9. Labels serialize to a sorted X-Labels header.
+  {
+    ingest.labels = undefined;
+    const { isError } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      labels: { b: "2", a: "1" },
+    });
+    const ok = !isError && ingest.labels === "a:1,b:2";
+    record("labels serialize to sorted X-Labels", ok, ok ? undefined : `X-Labels=${ingest.labels}`);
+  }
+  // 10. url + file_path → invalid_input (mutual exclusivity).
+  {
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      file_path: "/tmp/x.pdf",
+    });
+    const ok = isError && content.code === "invalid_input";
+    record("url + file_path → invalid_input", ok, ok ? undefined : JSON.stringify(content));
+  }
 }
 
 async function main(): Promise<void> {
@@ -554,7 +607,7 @@ async function main(): Promise<void> {
   const deadClient = new MCPClient({ POMA_API_BASE_URL: deadURL, POMA_API_KEY: "" });
   const noTokenClient = new MCPClient({ POMA_API_BASE_URL: errStub.url, POMA_API_KEY: "" });
   try {
-    await errorCodeTests(stubClient, deadClient, noTokenClient);
+    await errorCodeTests(stubClient, deadClient, noTokenClient, errStub.ingest);
   } finally {
     await stubClient.close();
     await deadClient.close();

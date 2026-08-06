@@ -133,6 +133,28 @@ export function resolveIngestPayload(input: IngestInput): ResolvedPayload {
   return { data, filename };
 }
 
+// parseLabelsArg coerces the tool's `labels` argument into a string→string map.
+// Only string values are kept (the input schema declares string values); non-object
+// or array inputs yield an empty map.
+export function parseLabelsArg(arg: unknown): Record<string, string> {
+  if (arg === null || typeof arg !== "object" || Array.isArray(arg)) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(arg as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+  }
+  return out;
+}
+
+// serializeLabels renders labels as the X-Labels header value: "key:value" pairs
+// with keys sorted for a deterministic header, joined by ",". Empty/whitespace-only
+// keys are skipped. Mirrors the Go serializeLabels so both emit an identical header.
+export function serializeLabels(labels: Record<string, string>): string {
+  const keys = Object.keys(labels)
+    .filter((k) => k.trim() !== "")
+    .sort();
+  return keys.map((k) => `${k}:${labels[k]}`).join(",");
+}
+
 // Lightweight magic-byte sniffer for common file types — mirrors Go's
 // http.DetectContentType + mime.ExtensionsByType for the subset that the
 // POMA Grill currently accepts. Returns extension with leading dot, or "".

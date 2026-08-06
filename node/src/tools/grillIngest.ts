@@ -13,7 +13,7 @@ import {
   type ToolContext,
 } from "../common.js";
 import { GrillClient, parseJob } from "../client/grillClient.js";
-import { resolveIngestPayload } from "../client/ingestPayload.js";
+import { parseLabelsArg, resolveIngestPayload, serializeLabels } from "../client/ingestPayload.js";
 import { resolveScope, scopeFields } from "../scope.js";
 
 export async function grillIngest(
@@ -25,20 +25,35 @@ export async function grillIngest(
     return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_API_KEY on the server)");
   }
 
-  let resolved;
-  try {
-    resolved = resolveIngestPayload({
-      file_base64: typeof args.file_base64 === "string" ? args.file_base64 : undefined,
-      file_path: typeof args.file_path === "string" ? args.file_path : undefined,
-      filename: typeof args.filename === "string" ? args.filename : undefined,
-    });
-  } catch (err) {
-    return codedError(ErrorCode.InvalidInput, err instanceof Error ? err.message : String(err));
-  }
-
+  const url = typeof args.url === "string" ? args.url.trim() : "";
+  const labels = serializeLabels(parseLabelsArg(args.labels));
   const projectID = getProjectID(args.project_id);
   const client = new GrillClient(token, projectID);
-  const res = await client.ingestRaw(resolved.data, resolved.filename);
+
+  let res;
+  if (url !== "") {
+    // URL ingest: the server fetches the remote URL. Mutually exclusive with the
+    // file inputs.
+    if (typeof args.file_path === "string" && args.file_path !== "") {
+      return codedError(ErrorCode.InvalidInput, "provide only one of url, file_path, or file_base64");
+    }
+    if (typeof args.file_base64 === "string" && args.file_base64 !== "") {
+      return codedError(ErrorCode.InvalidInput, "provide only one of url, file_path, or file_base64");
+    }
+    res = await client.ingestRemoteURL(url, labels);
+  } else {
+    let resolved;
+    try {
+      resolved = resolveIngestPayload({
+        file_base64: typeof args.file_base64 === "string" ? args.file_base64 : undefined,
+        file_path: typeof args.file_path === "string" ? args.file_path : undefined,
+        filename: typeof args.filename === "string" ? args.filename : undefined,
+      });
+    } catch (err) {
+      return codedError(ErrorCode.InvalidInput, err instanceof Error ? err.message : String(err));
+    }
+    res = await client.ingestRaw(resolved.data, resolved.filename, labels);
+  }
 
   const authErr = interpretAuthError(args.token, res.status, res.body, "grill ingest");
   if (authErr) return codedError(authErr.code, authErr.message);
