@@ -105,7 +105,7 @@ Once configured, ask the agent something like:
 
 > "Ingest `~/docs/report.pdf` with POMA Grill, then search it for 'coverage limits'"
 
-For large files, pass `file_path` rather than `file_base64` so the server reads bytes from disk instead of embedding them in JSON.
+For large files, pass `file_path` rather than `file_base64` so the server reads bytes from disk instead of embedding them in JSON. To ingest web content, pass `url` instead — the POMA Grill server fetches and ingests it (the MCP does not download it). All three inputs are mutually exclusive; `grill_ingest` / `grill_ingest_sync` also accept optional `{key: value}` `labels`.
 
 ## Modes
 
