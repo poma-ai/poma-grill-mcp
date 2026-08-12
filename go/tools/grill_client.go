@@ -21,7 +21,7 @@ import (
 
 // grillIngestData sends POST /grill/ingest with raw file bytes.
 // Placeholder for (*client.Client).GrillIngestData(data []byte, filename string) ([]byte, int, error).
-func grillIngestData(c *client.Client, data []byte, filename string, projectID string) ([]byte, int, error) {
+func grillIngestData(c *client.Client, data []byte, filename string, projectID string, labels string) ([]byte, int, error) {
 	name := grillSanitizeFilename(filename)
 	headers := map[string]string{
 		"Content-Disposition": `attachment; filename="` + name + `"`,
@@ -31,7 +31,26 @@ func grillIngestData(c *client.Client, data []byte, filename string, projectID s
 	if projectID != "" {
 		headers["X-Project-ID"] = projectID
 	}
+	if labels != "" {
+		headers["X-Labels"] = labels
+	}
 	return c.Do(http.MethodPost, "/grill/ingest", bytes.NewReader(data), headers)
+}
+
+// grillIngestURL sends POST /grill/ingest with an X-Remote-URL header and no
+// body: the POMA Grill server fetches and ingests the remote URL. Returns the
+// same {job_id} shape as grillIngestData.
+func grillIngestURL(c *client.Client, remoteURL, projectID, labels string) ([]byte, int, error) {
+	headers := map[string]string{
+		"X-Remote-URL": remoteURL,
+	}
+	if projectID != "" {
+		headers["X-Project-ID"] = projectID
+	}
+	if labels != "" {
+		headers["X-Labels"] = labels
+	}
+	return c.Do(http.MethodPost, "/grill/ingest", nil, headers)
 }
 
 // grillSearch sends POST /grill/search.

@@ -52,7 +52,7 @@ export class GrillClient {
     return { body: buf, status: res.status };
   }
 
-  async ingestRaw(data: Uint8Array, filename: string): Promise<GrillResponse> {
+  async ingestRaw(data: Uint8Array, filename: string, labels = ""): Promise<GrillResponse> {
     const url = joinURL(apiBaseURL(), "/grill/ingest");
     const safeName = sanitizeFilename(filename);
     // BodyInit accepts BufferSource; Uint8Array is allowed in Node 20+ fetch.
@@ -63,7 +63,24 @@ export class GrillClient {
       Authorization: `Bearer ${this.token}`,
     };
     if (this.projectID !== "") headers["X-Project-ID"] = this.projectID;
+    if (labels !== "") headers["X-Labels"] = labels;
     const res = await fetch(url, { method: "POST", headers, body: data });
+    const buf = new Uint8Array(await res.arrayBuffer());
+    return { body: buf, status: res.status };
+  }
+
+  // ingestRemoteURL sends POST /grill/ingest with an X-Remote-URL header and no
+  // body: the POMA Grill server fetches and ingests the remote URL. Returns the
+  // same { job_id } shape as ingestRaw.
+  async ingestRemoteURL(remoteURL: string, labels = ""): Promise<GrillResponse> {
+    const url = joinURL(apiBaseURL(), "/grill/ingest");
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.token}`,
+      "X-Remote-URL": remoteURL,
+    };
+    if (this.projectID !== "") headers["X-Project-ID"] = this.projectID;
+    if (labels !== "") headers["X-Labels"] = labels;
+    const res = await fetch(url, { method: "POST", headers });
     const buf = new Uint8Array(await res.arrayBuffer());
     return { body: buf, status: res.status };
   }

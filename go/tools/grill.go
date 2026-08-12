@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -61,9 +62,18 @@ var grillIngestInputSchema = &jsonschema.Schema{
 			Type:        "string",
 			Description: "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES.",
 		},
+		"url": {
+			Type:        "string",
+			Description: ingestURLDescription,
+		},
 		"filename": {
 			Type:        "string",
 			Description: "Original basename (e.g. report.pdf). Optional; inferred from file_path or content when possible.",
+		},
+		"labels": {
+			Type:                 "object",
+			AdditionalProperties: &jsonschema.Schema{Type: "string"},
+			Description:          ingestLabelsDescription,
 		},
 		"token": {
 			Type:        "string",
@@ -71,6 +81,36 @@ var grillIngestInputSchema = &jsonschema.Schema{
 		},
 		"project_id": projectIDSchema,
 	},
+}
+
+// ingestURLDescription and ingestLabelsDescription are shared verbatim with the
+// Node schema (schemas/tools.json). Keep byte-identical — the Go↔Node tools/list
+// parity check depends on it.
+const ingestURLDescription = "Remote URL for the POMA Grill server to fetch and ingest. Mutually exclusive with file_path/file_base64. The MCP does not download it — the server fetches the URL."
+
+const ingestLabelsDescription = "Optional key:value labels to attach to the ingested document, e.g. {\"team\":\"eng\"}. Sent as the X-Labels header. Avoid ':' and ',' in keys or values (used as delimiters)."
+
+// serializeLabels renders ingest labels as the X-Labels header value: "key:value"
+// pairs with keys sorted for a deterministic header, joined by ",". Keys that are
+// empty/whitespace-only are skipped. Mirrors the Node serializeLabels so both
+// implementations emit an identical header.
+func serializeLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+":"+labels[k])
+	}
+	return strings.Join(parts, ",")
 }
 
 var grillIngestOutputSchema = &jsonschema.Schema{
@@ -95,7 +135,7 @@ var grillIngestTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(true),
 	},
-	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id. Once done, doc_id equals job_id for grill_search. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop." + errorHandlingGuidance,
+	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local), file_base64 (small), or url (the server fetches it). Returns job_id. Once done, doc_id equals job_id for grill_search. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop." + errorHandlingGuidance,
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -107,17 +147,19 @@ var grillIngestSyncTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(true),
 	},
-	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local) or file_base64 (small). Returns job_id and status events. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees." + errorHandlingGuidance,
+	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local), file_base64 (small), or url (the server fetches it). Returns job_id and status events. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees." + errorHandlingGuidance,
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
 
 type GrillIngestInput struct {
-	FileBase64 string `json:"file_base64,omitempty"`
-	FilePath   string `json:"file_path,omitempty"`
-	Filename   string `json:"filename,omitempty"`
-	Token      string `json:"token,omitempty"`
-	ProjectID  string `json:"project_id,omitempty"`
+	FileBase64 string            `json:"file_base64,omitempty"`
+	FilePath   string            `json:"file_path,omitempty"`
+	URL        string            `json:"url,omitempty"`
+	Filename   string            `json:"filename,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
+	Token      string            `json:"token,omitempty"`
+	ProjectID  string            `json:"project_id,omitempty"`
 }
 
 type GrillIngestOutput struct {
@@ -141,17 +183,31 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 	if token == "" {
 		return errResult(), GrillIngestOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
 	}
-	data, filename, err := resolveGrillIngestPayload(input)
-	if err != nil {
-		// Payload build / arg validation failure — bad input, not transport.
-		return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "%s", err.Error())}, nil
-	}
 
 	projectID := getProjectID(input.ProjectID)
-	slog.Info("grill ingest", "filename", filename, "bytes", len(data))
+	labels := serializeLabels(input.Labels)
 	c := grillClient(token)
 
-	body, st, err := grillIngestData(c, data, filename, projectID)
+	var body []byte
+	var st int
+	var err error
+	if input.URL != "" {
+		// URL ingest: the server fetches the remote URL. Mutually exclusive with
+		// the file inputs.
+		if input.FileBase64 != "" || input.FilePath != "" {
+			return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "provide only one of url, file_path, or file_base64")}, nil
+		}
+		slog.Info("grill ingest", "url", input.URL)
+		body, st, err = grillIngestURL(c, input.URL, projectID, labels)
+	} else {
+		data, filename, perr := resolveGrillIngestPayload(input)
+		if perr != nil {
+			// Payload build / arg validation failure — bad input, not transport.
+			return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "%s", perr.Error())}, nil
+		}
+		slog.Info("grill ingest", "filename", filename, "bytes", len(data))
+		body, st, err = grillIngestData(c, data, filename, projectID, labels)
+	}
 	if err != nil {
 		// Network/client error reaching the Grill API — transient, retryable.
 		return errResult(), GrillIngestOutput{GrillError: GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)}}, nil
@@ -942,7 +998,7 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 				return
 			}
 
-			body, st, err := grillIngestData(c, data, filename, projectID)
+			body, st, err := grillIngestData(c, data, filename, projectID, "")
 			if err != nil {
 				// Network/client error reaching the Grill API — transient, retryable.
 				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)}}

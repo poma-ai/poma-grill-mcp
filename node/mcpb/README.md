@@ -16,7 +16,7 @@ documents and run semantic search over them directly from your desktop MCP host
 
 | Tool | What it does |
 |------|--------------|
-| `grill_ingest` | Ingest a document into the context engine (returns a `job_id`). |
+| `grill_ingest` | Ingest a document into the context engine — from a local file, base64 bytes, or a remote `url` the server fetches. Optional `labels`. Returns a `job_id`. |
 | `grill_ingest_sync` | Ingest a document and wait until processing completes. |
 | `grill_ingest_resume` | Resume tracking a previously started ingest job. |
 | `grill_ingest_batch` | Ingest multiple documents in one call. |

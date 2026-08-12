@@ -173,13 +173,15 @@ Ingest ~/docs/spec.pdf into POMA Grill, then search it for authentication requir
 
 ### `grill_ingest` / `grill_ingest_sync` arguments
 
-Provide **exactly one** of `file_path` or `file_base64`.
+Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `file_path` | string | one-of | Path readable by the **MCP server process** (absolute or relative to server cwd). Best for large files; avoids giant JSON payloads. |
 | `file_base64` | string | one-of | Standard base64 of the file bytes; fine for small files. |
+| `url` | string | one-of | Remote URL the **POMA Grill server** fetches and ingests. The MCP itself does not download it. |
 | `filename` | string | no | Original basename (e.g. `report.pdf`). With `file_path`, defaults to the path basename; otherwise inferred from bytes when possible. |
+| `labels` | object | no | Optional `{key: value}` labels attached to the document (sent as the `X-Labels` header). Avoid `:` and `,` in keys/values. |
 | `token` | string | no | API key — omit if `POMA_API_KEY` is set on the server process |
 
 **`file_path` notes**
