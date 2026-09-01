@@ -1,0 +1,23 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "poma-grill",
+  "version": "0.5.0",
+  "description": "POMA Grill — ingest documents into the Grill context engine and run semantic search over them from any agent.",
+  "author": {
+    "name": "POMA AI",
+    "email": "support@poma-ai.com",
+    "url": "https://poma-ai.com"
+  },
+  "homepage": "https://poma-ai.com",
+  "repository": "https://github.com/poma-ai/poma-grill-mcp",
+  "license": "MPL-2.0",
+  "keywords": [
+    "poma",
+    "grill",
+    "rag",
+    "semantic-search",
+    "document-ingestion",
+    "context-engine",
+    "retrieval"
+  ]
+}
