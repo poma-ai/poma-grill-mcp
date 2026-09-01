@@ -29,7 +29,9 @@ The `.claude-plugin/` and `.mcp.json` files are Claude Code's own format, which 
 Agent Plugins standard — Claude Code reads `.mcp.json`, never `mcp.json`. Both MCP
 declarations point at the same endpoint; keep them in sync. Install steps for each client
 are in [MANUAL.md](MANUAL.md) — the short version is
-`npx plugins add https://github.com/poma-ai/poma-grill-mcp`.
+`npx plugins add https://github.com/poma-ai/poma-grill-mcp`, or
+`claude plugin marketplace add poma-ai/poma-grill-mcp` for Claude Code, served by
+`.claude-plugin/marketplace.json` at the repo root.
 
 ## MCP server
 

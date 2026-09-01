@@ -114,13 +114,19 @@ Then, in a session, `/help` lists the two skills under the `poma-grill` namespac
 
 ### Distribute to a team
 
-`npx plugins add https://github.com/poma-ai/poma-grill-mcp` already registers a
-marketplace per install, which is enough for most teams.
+The repo root carries a `.claude-plugin/marketplace.json` naming the marketplace
+`poma-ai`, so teammates install straight from GitHub:
 
-For a first-class Claude Code marketplace, the repo needs a `.claude-plugin/marketplace.json`
-at its root listing `plugins/poma-grill` as a source. It does not ship one yet. With that
-added, teammates run `claude plugin marketplace add poma-ai/poma-grill-mcp` followed by
-`claude plugin install poma-grill`.
+```bash
+claude plugin marketplace add poma-ai/poma-grill-mcp && claude plugin install poma-grill@poma-ai
+```
+
+Add `--scope project` to the marketplace command to declare it for a repo rather than for
+your user. Undo with `claude plugin marketplace remove poma-ai`, which takes the installed
+plugin with it.
+
+`npx plugins add https://github.com/poma-ai/poma-grill-mcp` registers its own one-off
+marketplace instead, and needs no prior setup.
 
 ### API key instead of OAuth
 
