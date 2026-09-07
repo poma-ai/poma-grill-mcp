@@ -311,6 +311,8 @@ A Node Docker image is not currently published.
 | `-input <path\|->` | — | Stdio mode: MCP on stdin (`-`) or file path |
 | `-http <addr>` | — | HTTP mode, e.g. `:8080`. Mutually exclusive with `-input`. |
 
+In HTTP mode, state-changing requests to `/` and `/ingest-upload` are guarded against CSRF. Requests carrying neither `Sec-Fetch-Site` nor `Origin` — every non-browser MCP client — are allowed, and `GET`/`HEAD`/`OPTIONS` always are, so `/health` and OAuth discovery are unaffected. A browser page calling this server directly needs its origin in **`GRILL_TRUSTED_ORIGINS`** (comma-separated); a sibling subdomain counts as cross-origin and has to be listed too. Full matrix in [`go/README.md`](go/README.md#cross-origin-protection).
+
 Stdio input is **NDJSON — one MCP message per line**. Closing stdin ends the session, but the server first finishes answering the requests it has already read, so feeding a batch of messages from a file or a shell pipe returns every response instead of losing them. **`GRILL_STDIO_DRAIN_STALL`** bounds that wait (Go duration, default `2m`); the clock restarts on every message the server writes, so a slow ingest emitting progress notifications is never cut off. Set it to `0` to exit at end of input and abandon unanswered requests.
 
 Both implementations accept the same flags.

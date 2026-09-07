@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -121,6 +122,31 @@ func runStdioMcpServer(server *mcp.Server) {
 	}
 }
 
+// crossOriginProtection builds the CSRF guard for the HTTP server, trusting any
+// origins listed in GRILL_TRUSTED_ORIGINS (comma-separated, each
+// "scheme://host[:port]").
+//
+// Only a browser page calling this server directly needs an entry here. Requests
+// carrying neither Sec-Fetch-Site nor Origin — which is every non-browser MCP
+// client — are allowed regardless, and GET/HEAD/OPTIONS are always allowed. Note
+// that a sibling subdomain is cross-origin for this purpose (the browser sends
+// Sec-Fetch-Site: same-site), so it needs listing too.
+func crossOriginProtection(trusted string) *http.CrossOriginProtection {
+	p := http.NewCrossOriginProtection()
+	for _, origin := range strings.Split(trusted, ",") {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		if err := p.AddTrustedOrigin(origin); err != nil {
+			slog.Warn("ignoring invalid GRILL_TRUSTED_ORIGINS entry", "origin", origin, "err", err)
+			continue
+		}
+		slog.Info("trusting cross-origin requests", "origin", origin)
+	}
+	return p
+}
+
 func runHttpMcpServer(server *mcp.Server) {
 	if *inputPath != "" {
 		slog.Warn("ignoring -input in HTTP mode")
@@ -180,7 +206,7 @@ func runHttpMcpServer(server *mcp.Server) {
 	// server's POMA_API_KEY, so without this a page in the operator's browser could
 	// POST documents into their project on their key. Safe methods are always
 	// allowed, so /health and the OAuth well-known endpoint are unaffected.
-	protected := http.NewCrossOriginProtection().Handler(mux)
+	protected := crossOriginProtection(os.Getenv("GRILL_TRUSTED_ORIGINS")).Handler(mux)
 
 	httpServer := &http.Server{Addr: *httpAddr, Handler: loggingMiddleware(apiKeyMiddleware(protected))}
 

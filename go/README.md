@@ -281,6 +281,21 @@ When `POMA_API_JWT_SECRET` is set, the MCP verifies incoming Bearer JWTs locally
 | `POMA_MCP_RESOURCE` | OAuth deployments | The MCP's own public URI (e.g. `https://mcp.grill.poma-ai.com/`). Used for `aud` validation and advertised in the protected-resource metadata. |
 | `POMA_API_BASE_URL` | Recommended | The api's base URL (e.g. `https://api.poma-ai.com`). Advertised in protected-resource metadata as the authorization server. Defaults to `https://api.poma-ai.com`. |
 | `POMA_MCP_PUBLIC_URL` | Recommended | The MCP's own public base URL. Used for the `resource` field in protected-resource metadata and the `WWW-Authenticate` challenge. Falls back to `http://localhost:<port>`. **Required behind a reverse proxy** — `X-Forwarded-Proto`/`X-Forwarded-Host` headers are not trusted (to prevent header-injection attacks). |
+| `GRILL_TRUSTED_ORIGINS` | Browser clients only | Comma-separated origins (`scheme://host[:port]`) allowed to make cross-origin state-changing requests. See below. |
+
+**Cross-origin protection**
+
+State-changing requests (`POST` etc.) to `/` and `/ingest-upload` are guarded against CSRF. `GET`/`HEAD`/`OPTIONS` are always allowed, so `/health` and the protected-resource metadata endpoint are unaffected.
+
+| Client shape | Result |
+|---|---|
+| No `Sec-Fetch-Site` and no `Origin` header — **every non-browser MCP client** (Claude Code, Claude Desktop, Cursor, SDKs, curl) | allowed |
+| `Sec-Fetch-Site: same-origin`, or `none` (direct navigation) | allowed |
+| `Origin` matching `Host`, no `Sec-Fetch-Site` (pre-2023 browser) | allowed |
+| `Sec-Fetch-Site: same-site` — **a sibling subdomain counts as cross-origin** | `403` |
+| `Sec-Fetch-Site: cross-site`, or `Origin` not matching `Host` | `403` |
+
+Only a browser page calling this server directly needs `GRILL_TRUSTED_ORIGINS`; note the `same-site` row, so a sibling subdomain has to be listed too. Invalid entries are logged and skipped without affecting the valid ones.
 
 ### Large uploads: `POST /ingest-upload`
 
