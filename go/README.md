@@ -179,6 +179,7 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 - Works when the server runs on the **same machine** as the file (typical local stdio config). Hosted HTTP MCP (`mcp.poma-ai.com`) cannot read your laptop paths unless that file exists on the host.
 - **Security:** optional **`GRILL_INGEST_ALLOWED_PREFIX`**: if set, `file_path` must resolve (after symlink evaluation) under that directory. Non-regular files are rejected.
 - **`GRILL_INGEST_MAX_BYTES`**: max payload size in bytes. Unset defaults to 512 MiB. Set to **`0`** for no limit (use with care).
+- **`GRILL_MCP_MAX_BODY_BYTES`** (HTTP mode): max size of a single MCP JSON-RPC request body. Unset defaults to **16 MiB** (~12 MiB of file once base64 expansion is accounted for); a smaller `GRILL_INGEST_MAX_BYTES` lowers it to match. Set to **`0`** for no limit (use with care). This bound exists because a base64 file inside a JSON-RPC message is buffered several times before it reaches the Grill API — for larger files use `file_path` (stdio) or `POST /ingest-upload` (HTTP), which do not pay that cost. Exceeding it returns a plain-text **`413`** from the transport, not a `GrillError` JSON envelope.
 
 **Very large files without MCP**
 
@@ -280,6 +281,21 @@ When `POMA_API_JWT_SECRET` is set, the MCP verifies incoming Bearer JWTs locally
 | `POMA_MCP_RESOURCE` | OAuth deployments | The MCP's own public URI (e.g. `https://mcp.grill.poma-ai.com/`). Used for `aud` validation and advertised in the protected-resource metadata. |
 | `POMA_API_BASE_URL` | Recommended | The api's base URL (e.g. `https://api.poma-ai.com`). Advertised in protected-resource metadata as the authorization server. Defaults to `https://api.poma-ai.com`. |
 | `POMA_MCP_PUBLIC_URL` | Recommended | The MCP's own public base URL. Used for the `resource` field in protected-resource metadata and the `WWW-Authenticate` challenge. Falls back to `http://localhost:<port>`. **Required behind a reverse proxy** — `X-Forwarded-Proto`/`X-Forwarded-Host` headers are not trusted (to prevent header-injection attacks). |
+| `GRILL_TRUSTED_ORIGINS` | Browser clients only | Comma-separated origins (`scheme://host[:port]`) allowed to make cross-origin state-changing requests. See below. |
+
+**Cross-origin protection**
+
+State-changing requests (`POST` etc.) to `/` and `/ingest-upload` are guarded against CSRF. `GET`/`HEAD`/`OPTIONS` are always allowed, so `/health` and the protected-resource metadata endpoint are unaffected.
+
+| Client shape | Result |
+|---|---|
+| No `Sec-Fetch-Site` and no `Origin` header — **every non-browser MCP client** (Claude Code, Claude Desktop, Cursor, SDKs, curl) | allowed |
+| `Sec-Fetch-Site: same-origin`, or `none` (direct navigation) | allowed |
+| `Origin` matching `Host`, no `Sec-Fetch-Site` (pre-2023 browser) | allowed |
+| `Sec-Fetch-Site: same-site` — **a sibling subdomain counts as cross-origin** | `403` |
+| `Sec-Fetch-Site: cross-site`, or `Origin` not matching `Host` | `403` |
+
+Only a browser page calling this server directly needs `GRILL_TRUSTED_ORIGINS`; note the `same-site` row, so a sibling subdomain has to be listed too. Invalid entries are logged and skipped without affecting the valid ones.
 
 ### Large uploads: `POST /ingest-upload`
 
@@ -313,6 +329,8 @@ Stdio (default entrypoint): `docker run -i -e POMA_API_KEY=your-key ghcr.io/poma
 |------|---------|-------------|
 | `-input <path\|->` | — | Stdio mode: MCP on stdin (`-`) or file path |
 | `-http <addr>` | — | HTTP mode, e.g. `:8080`. Mutually exclusive with `-input`. |
+
+Stdio input is **NDJSON — one MCP message per line**. Closing stdin ends the session, but the server first finishes answering the requests it has already read, so feeding a batch of messages from a file or a shell pipe returns every response instead of losing them. **`GRILL_STDIO_DRAIN_STALL`** bounds that wait (Go duration, default `2m`); the clock restarts on every message the server writes, so a slow ingest emitting progress notifications is never cut off. Set it to `0` to exit at end of input and abandon unanswered requests.
 
 
 ---

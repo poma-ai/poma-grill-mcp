@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"flag"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -112,21 +112,64 @@ func runStdioMcpServer(server *mcp.Server) {
 
 	slog.Info("starting poma-mcp server")
 
-	transport := &mcp.IOTransport{
-		Reader: io.NopCloser(reader),
-		Writer: &nopCloserWriter{os.Stdout},
-	}
+	// The reader and writer are paired so that end of input does not cancel
+	// requests the server has already read; see tools.NewDrainingStdio.
+	in, out := tools.NewDrainingStdio(reader, os.Stdout)
+	transport := &mcp.IOTransport{Reader: in, Writer: out}
 	if err := server.Run(context.Background(), transport); err != nil {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
 	}
 }
 
+// crossOriginProtection builds the CSRF guard for the HTTP server, trusting any
+// origins listed in GRILL_TRUSTED_ORIGINS (comma-separated, each
+// "scheme://host[:port]").
+//
+// Only a browser page calling this server directly needs an entry here. Requests
+// carrying neither Sec-Fetch-Site nor Origin — which is every non-browser MCP
+// client — are allowed regardless, and GET/HEAD/OPTIONS are always allowed. Note
+// that a sibling subdomain is cross-origin for this purpose (the browser sends
+// Sec-Fetch-Site: same-site), so it needs listing too.
+func crossOriginProtection(trusted string) *http.CrossOriginProtection {
+	p := http.NewCrossOriginProtection()
+	for _, origin := range strings.Split(trusted, ",") {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		if err := p.AddTrustedOrigin(origin); err != nil {
+			slog.Warn("ignoring invalid GRILL_TRUSTED_ORIGINS entry", "origin", origin, "err", err)
+			continue
+		}
+		slog.Info("trusting cross-origin requests", "origin", origin)
+	}
+	return p
+}
+
 func runHttpMcpServer(server *mcp.Server) {
 	if *inputPath != "" {
 		slog.Warn("ignoring -input in HTTP mode")
 	}
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	// Stateless mode, per the sessionless direction of protocol version 2026-07-28
+	// (SEP-2567 / SEP-2575): no initialize/initialized handshake, no Mcp-Session-Id,
+	// each POST carries its protocol version and client capabilities in _meta and is
+	// served by a temporary session. GET and DELETE on the MCP path return 405.
+	//
+	// This suits the deployment: every tool is a self-contained request/response, the
+	// per-call token comes from the HTTP headers (apiKeyMiddleware), and the server
+	// never initiates a client request. Job-status progress notifications still reach
+	// the client because they are emitted inside the originating request's context.
+	mcpHandler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{
+			Stateless: true,
+			// go-sdk v1.7.0 caps request bodies at 4 MiB by default, which is too small
+			// for a base64 file inside a JSON-RPC message.
+			MaxRequestBodyBytes: tools.MCPRequestBodyBytes(),
+		},
+	)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
@@ -148,13 +191,24 @@ func runHttpMcpServer(server *mcp.Server) {
 	// /ingest-upload inherits token injection from apiKeyMiddleware at the server level, and
 	// its own handler already enforces that a non-empty token is present.
 	if os.Getenv("POMA_API_JWT_SECRET") != "" {
-		mux.Handle("/", oauth.RequireBearer(handler))
+		mux.Handle("/", oauth.RequireBearer(mcpHandler))
 	} else {
-		mux.Handle("/", handler)
+		mux.Handle("/", mcpHandler)
 	}
 	mux.HandleFunc("/ingest-upload", tools.HandleIngestUpload)
 
-	httpServer := &http.Server{Addr: *httpAddr, Handler: loggingMiddleware(apiKeyMiddleware(mux))}
+	// Cross-origin protection covers the whole mux, not just the MCP path.
+	//
+	// go-sdk v1.7.0 stopped applying a default CrossOriginProtection when the option
+	// is nil (v1.5.0 applied one to the MCP handler), so it has to be wrapped here
+	// anyway — and at the mux it also covers /ingest-upload, which the SDK never
+	// protected. That endpoint accepts any content type and falls back to the
+	// server's POMA_API_KEY, so without this a page in the operator's browser could
+	// POST documents into their project on their key. Safe methods are always
+	// allowed, so /health and the OAuth well-known endpoint are unaffected.
+	protected := crossOriginProtection(os.Getenv("GRILL_TRUSTED_ORIGINS")).Handler(mux)
+
+	httpServer := &http.Server{Addr: *httpAddr, Handler: loggingMiddleware(apiKeyMiddleware(protected))}
 
 	// Graceful shutdown: wait for SIGINT/SIGTERM, then drain in-flight requests.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -169,13 +223,9 @@ func runHttpMcpServer(server *mcp.Server) {
 		}
 	}()
 
-	slog.Info("MCP HTTP server listening", "addr", *httpAddr, "mcp", "/", "ingest_upload", "/ingest-upload")
+	slog.Info("MCP HTTP server listening", "addr", *httpAddr, "mcp", "/", "ingest_upload", "/ingest-upload", "stateless", true)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("HTTP server error", "err", err)
 		os.Exit(1)
 	}
 }
-
-type nopCloserWriter struct{ io.Writer }
-
-func (nopCloserWriter) Close() error { return nil }
