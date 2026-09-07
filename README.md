@@ -189,6 +189,7 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 - Works when the server runs on the **same machine** as the file (typical local stdio config). Hosted HTTP MCP (`mcp.poma-ai.com`) cannot read your laptop paths unless that file exists on the host.
 - **Security:** optional **`GRILL_INGEST_ALLOWED_PREFIX`**: if set, `file_path` must resolve (after symlink evaluation) under that directory. Non-regular files are rejected.
 - **`GRILL_INGEST_MAX_BYTES`**: max payload size in bytes. Unset defaults to 512 MiB. Set to **`0`** for no limit (use with care).
+- **`GRILL_MCP_MAX_BODY_BYTES`** (HTTP mode): max size of a single MCP JSON-RPC request body. Unset defaults to **16 MiB** (~12 MiB of file once base64 expansion is accounted for); a smaller `GRILL_INGEST_MAX_BYTES` lowers it to match. Set to **`0`** for no limit (use with care). This bound exists because a base64 file inside a JSON-RPC message is buffered several times before it reaches the Grill API — for larger files use `file_path` (stdio) or `POST /ingest-upload` (HTTP), which do not pay that cost. Exceeding it returns a plain-text **`413`** from the transport, not a `GrillError` JSON envelope.
 
 **Very large files without MCP**
 
@@ -309,6 +310,8 @@ A Node Docker image is not currently published.
 |------|---------|-------------|
 | `-input <path\|->` | — | Stdio mode: MCP on stdin (`-`) or file path |
 | `-http <addr>` | — | HTTP mode, e.g. `:8080`. Mutually exclusive with `-input`. |
+
+Stdio input is **NDJSON — one MCP message per line**. Closing stdin ends the session, but the server first finishes answering the requests it has already read, so feeding a batch of messages from a file or a shell pipe returns every response instead of losing them. **`GRILL_STDIO_DRAIN_STALL`** bounds that wait (Go duration, default `2m`); the clock restarts on every message the server writes, so a slow ingest emitting progress notifications is never cut off. Set it to `0` to exit at end of input and abandon unanswered requests.
 
 Both implementations accept the same flags.
 
