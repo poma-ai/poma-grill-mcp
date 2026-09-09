@@ -1391,7 +1391,11 @@ func GrillProjects(ctx context.Context, _ *mcp.CallToolRequest, input GrillProje
 		if err := json.Unmarshal(body, &p); err != nil || (p.ProjectID == "" && p.ID == "") {
 			return errResult(), GrillProjectsOutput{GrillError: errOut(CodeParseError, "grill projects: parse /projects/info response: %s", string(body))}, nil
 		}
-		projects = []grillProject{p}
+		// The key binds one project; honour a product filter the same way the
+		// listing endpoint would.
+		if input.Product == "" || p.Product == input.Product {
+			projects = []grillProject{p}
+		}
 	} else {
 		projects, err = parseProjects(body)
 		if err != nil {

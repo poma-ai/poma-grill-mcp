@@ -50,10 +50,13 @@ export async function grillProjects(
   try {
     const parsed = JSON.parse(text) as unknown;
     if (projectKey) {
-      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || typeof (parsed as ProjectInfo).id !== "string") {
+      const info = parsed as ProjectInfo & { project_id?: string };
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || (typeof info.id !== "string" && typeof info.project_id !== "string")) {
         return codedError(ErrorCode.ParseError, `grill projects: parse /projects/info response: ${text}`);
       }
-      projects = [parsed as ProjectInfo];
+      if (typeof info.id !== "string") info.id = info.project_id ?? "";
+      // The key binds one project; honour a product filter the same way the listing would.
+      projects = product && info.product !== product ? [] : [info];
     } else if (Array.isArray(parsed)) {
       projects = parsed as ProjectInfo[];
     } else if (

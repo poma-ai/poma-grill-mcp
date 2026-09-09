@@ -134,6 +134,12 @@ func TestGrillProjectsWithProjectKeyUsesProjectInfo(t *testing.T) {
 		t.Fatalf("paths = %v, want only /projects/info", paths)
 	}
 
+	// A product filter that does not match the bound project yields the empty answer.
+	_, out, _ = GrillProjects(context.Background(), nil, GrillProjectsInput{Token: "poma_proj_gr_k", Product: "primecut"})
+	if out.Code != "" || !strings.Contains(out.Projects, "No accessible projects") {
+		t.Fatalf("product filter: %+v", out)
+	}
+
 	// Account keys keep the listing path.
 	paths = nil
 	_, out, _ = GrillProjects(context.Background(), nil, GrillProjectsInput{Token: "poma_acc_k"})

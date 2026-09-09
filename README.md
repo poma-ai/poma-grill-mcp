@@ -21,6 +21,8 @@ The Go binary is the default everywhere the instructions below don't specify oth
 
 Sign up at [console.poma-ai.com](https://console.poma-ai.com) and create a grill project. Copy the API key.
 
+A **project key** (`poma_proj_gr_…`) is bound to one project server-side. The server resolves that project through the API's `/projects/info` (the projects list refuses project keys), so `scope.source` reads `project API key` and `scope.hint` names the project, and `grill_projects` returns that one project instead of a 403. Leave `POMA_PROJECT_ID` unset, or equal to that project: a `project_id` argument or `POMA_PROJECT_ID` naming a different project is answered by the API with `409 project_id_conflict`, which the tools report as terminal `invalid_input`. An **account key** (`poma_acc_…`) or a login token addresses all projects; pick one with `POMA_PROJECT_ID` or the `project_id` argument.
+
 ## 2. Install
 
 - **Go** — see [Install](./go/README.md#2-install) in `go/README.md`
