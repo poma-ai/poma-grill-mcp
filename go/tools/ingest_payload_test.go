@@ -215,6 +215,9 @@ func TestMCPMaxLineLength(t *testing.T) {
 				t.Errorf("MCPMaxLineLength() = %d, below the %d floor", got, floor)
 			}
 		})
+	}
+}
+
 // On the hosted (HTTP) server file_path would read the pod's filesystem
 // (found 2026-09-09: mcp.poma-ai.com advertises the path-based ingest tools
 // and runs with no GRILL_INGEST_ALLOWED_PREFIX). Refuse it there unless the

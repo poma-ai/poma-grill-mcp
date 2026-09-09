@@ -43,7 +43,7 @@ export function setHTTPMode(on: boolean): void {
 
 export const ERR_FILE_PATH_HOSTED =
   "file_path is not available on the hosted HTTP server: the path would be read from the server's own filesystem, not from your machine. " +
-  "Pass url or file_base64, use the /ingest-upload endpoint, or run the local stdio server. (Operators can opt in by setting GRILL_INGEST_ALLOWED_PREFIX.)";
+  "Pass url or file_base64, or run the local stdio server. (Operators can opt in by setting GRILL_INGEST_ALLOWED_PREFIX.)";
 
 function readFileForIngest(path: string): Uint8Array {
   const trimmed = path.trim();
