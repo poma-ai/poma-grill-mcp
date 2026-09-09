@@ -5,6 +5,7 @@ import {
   getProjectID,
   getToken,
   interpretAuthError,
+  interpretProjectConflict,
   interpretTooManyJobs,
   makeGrillError,
   projectIDSource,
@@ -64,6 +65,8 @@ export async function grillIngestSync(
       makeGrillError(ErrorCode.TooManyJobs, throttle.message, { retryAfterSeconds: throttle.retryAfterSeconds }),
     );
   }
+  const conflict = interpretProjectConflict(ingestRes.status, ingestRes.body, "grill ingest");
+  if (conflict) return codedError(ErrorCode.InvalidInput, conflict.message);
   if (ingestRes.status !== 201) {
     const text = new TextDecoder("utf-8").decode(ingestRes.body);
     return codedError(ErrorCode.UpstreamError, `grill ingest: HTTP ${ingestRes.status}: ${text}`, {
@@ -110,7 +113,7 @@ export async function grillIngestSync(
     }
   }
 
-  const { source } = projectIDSource(args.project_id);
+  const { source } = projectIDSource(token, args.project_id);
   const scope = await resolveScope(client, token, projectID, "", source);
   const scopeOut = scopeFields(scope);
   return successResult({ job_id: job.job_id, events, ...(scopeOut ? { scope: scopeOut } : {}) });

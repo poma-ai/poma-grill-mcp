@@ -56,14 +56,67 @@ export function getProjectID(arg: unknown): string {
 }
 
 /**
- * Resolves the project ID and reports where it came from, for the human-readable
- * scope hint. Mirrors Go's projectIDSource.
+ * Wire prefix of project-bound API keys (poma_proj_gr_… grill, poma_proj_pc_…
+ * PrimeCut). Account keys are poma_acc_…; login JWTs have no prefix. Mirrors
+ * Go's projectKeyPrefix / isProjectKey.
  */
-export function projectIDSource(arg: unknown): { id: string; source: string } {
+const PROJECT_KEY_PREFIX = "poma_proj_";
+
+/** scope.source value when the project API key itself selects the project. */
+export const SOURCE_PROJECT_KEY = "project API key";
+
+/**
+ * True for a project-bound API key. Such a key selects exactly one project on
+ * the gateway: /projects refuses it (403), /projects/info returns the bound
+ * project, and a divergent X-Project-ID is rejected with 409 project_id_conflict.
+ */
+export function isProjectKey(token: string): boolean {
+  return token.startsWith(PROJECT_KEY_PREFIX);
+}
+
+/**
+ * Resolves the project ID and reports where it came from, for the human-readable
+ * scope hint. Mirrors Go's projectIDSource. A project API key with no explicit
+ * selection reports SOURCE_PROJECT_KEY and an empty id: the gateway binds the
+ * project from the key.
+ */
+export function projectIDSource(token: string, arg: unknown): { id: string; source: string } {
   if (typeof arg === "string" && arg !== "") return { id: arg, source: "project_id argument" };
   const env = process.env.POMA_PROJECT_ID;
   if (env && env !== "") return { id: env, source: "POMA_PROJECT_ID env var" };
+  if (isProjectKey(token)) return { id: "", source: SOURCE_PROJECT_KEY };
   return { id: "", source: "account default (no project_id set)" };
+}
+
+/**
+ * Recognises the gateway's 409 project_id_conflict: the request carried an
+ * X-Project-ID (project_id argument or POMA_PROJECT_ID) that differs from the
+ * project the presented project API key is bound to. A caller-side
+ * configuration error — invalid_input (terminal), never a transient
+ * upstream_error. Mirrors Go's interpretProjectConflict.
+ */
+export function interpretProjectConflict(
+  status: number,
+  body: Uint8Array,
+  operation: string,
+): { message: string } | undefined {
+  if (status !== 409) return undefined;
+  let reason = "";
+  let code = "";
+  try {
+    const parsed = JSON.parse(new TextDecoder("utf-8").decode(body)) as Record<string, unknown>;
+    reason = typeof parsed.reason === "string" ? parsed.reason : "";
+    code = typeof parsed.code === "string" ? parsed.code : "";
+  } catch {
+    return undefined;
+  }
+  if (reason !== "project_id_conflict" && code !== "project_id_conflict") return undefined;
+  return {
+    message:
+      `${operation}: project_id conflict (HTTP 409). The project_id argument or POMA_PROJECT_ID env var names a different project ` +
+      `than the one the project API key is bound to. A project key selects its project by itself: drop the project_id / ` +
+      `POMA_PROJECT_ID, or use an account API key (POMA_API_KEY) to address other projects.`,
+  };
 }
 
 function trimRight(s: string, ch: string): string {

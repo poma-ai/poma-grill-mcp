@@ -149,16 +149,66 @@ func getProjectID(inputProjectID string) string {
 	return os.Getenv("POMA_PROJECT_ID")
 }
 
+// projectKeyPrefix is the wire prefix of project-bound API keys
+// (poma_proj_gr_… for grill, poma_proj_pc_… for PrimeCut). Account keys are
+// poma_acc_…; login JWTs have no prefix. Mirrors the gateway's
+// auth/mechanism constants.
+const projectKeyPrefix = "poma_proj_"
+
+// sourceProjectKey is the scope.source value when the project is selected by
+// the project API key itself rather than by an argument or env var.
+const sourceProjectKey = "project API key"
+
+// isProjectKey reports whether token is a project-bound API key. Such a key
+// selects exactly one project on the gateway: /projects (listing) refuses it
+// with 403, /projects/info returns the bound project, and a divergent
+// X-Project-ID is rejected with 409 project_id_conflict.
+func isProjectKey(token string) bool {
+	return strings.HasPrefix(token, projectKeyPrefix)
+}
+
 // projectIDSource resolves the project ID and reports where it came from, for
-// the human-readable scope hint.
-func projectIDSource(inputProjectID string) (id, source string) {
+// the human-readable scope hint. A project API key with no explicit selection
+// reports sourceProjectKey and an empty id: the gateway binds the project from
+// the key, so the server never needs to know the id up front.
+func projectIDSource(token, inputProjectID string) (id, source string) {
 	if inputProjectID != "" {
 		return inputProjectID, "project_id argument"
 	}
 	if v := os.Getenv("POMA_PROJECT_ID"); v != "" {
 		return v, "POMA_PROJECT_ID env var"
 	}
+	if isProjectKey(token) {
+		return "", sourceProjectKey
+	}
 	return "", "account default (no project_id set)"
+}
+
+// interpretProjectConflict recognises the gateway's 409 project_id_conflict:
+// the request carried an X-Project-ID (from the project_id argument or
+// POMA_PROJECT_ID) that differs from the project the presented project API key
+// is bound to. The key always wins on the gateway, so the request is
+// ambiguous and rejected. This is a configuration error on the caller's side,
+// classified invalid_input (terminal), never a transient upstream_error.
+func interpretProjectConflict(statusCode int, body []byte, operation string) (msg string, ok bool) {
+	if statusCode != http.StatusConflict {
+		return "", false
+	}
+	var errResp struct {
+		Code   json.RawMessage `json:"code"`
+		Reason string          `json:"reason"`
+	}
+	_ = json.Unmarshal(body, &errResp)
+	code := strings.Trim(string(errResp.Code), `"`)
+	if errResp.Reason != "project_id_conflict" && code != "project_id_conflict" {
+		return "", false
+	}
+	return fmt.Sprintf(
+		"%s: project_id conflict (HTTP 409). The project_id argument or POMA_PROJECT_ID env var names a different project "+
+			"than the one the project API key is bound to. A project key selects its project by itself: drop the project_id / "+
+			"POMA_PROJECT_ID, or use an account API key (POMA_API_KEY) to address other projects.",
+		operation,
+	), true
 }
 
 // envToken returns the API token from the environment and the name of the

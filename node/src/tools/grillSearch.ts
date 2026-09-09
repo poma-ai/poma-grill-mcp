@@ -5,6 +5,7 @@ import {
   getProjectID,
   getToken,
   interpretAuthError,
+  interpretProjectConflict,
   projectIDSource,
   successResult,
   type ToolContext,
@@ -59,6 +60,8 @@ export async function grillSearch(
   }
   const authErr = interpretAuthError(args.token, res.status, res.body, "grill search");
   if (authErr) return codedError(authErr.code, authErr.message);
+  const conflict = interpretProjectConflict(res.status, res.body, "grill search");
+  if (conflict) return codedError(ErrorCode.InvalidInput, conflict.message);
   if (res.status !== 200) {
     const text = new TextDecoder("utf-8").decode(res.body);
     return codedError(ErrorCode.UpstreamError, `grill search: HTTP ${res.status}: ${text}`, { httpStatus: res.status });
@@ -86,7 +89,7 @@ export async function grillSearch(
   if (parsed.assets !== undefined && parsed.assets !== null) {
     out.assets = parsed.assets;
   }
-  const { source } = projectIDSource(args.project_id);
+  const { source } = projectIDSource(token, args.project_id);
   const scope = await resolveScope(client, token, projectID, "", source);
   const scopeOut = scopeFields(scope);
   if (scopeOut) out.scope = scopeOut;

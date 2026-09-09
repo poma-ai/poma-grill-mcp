@@ -5,6 +5,7 @@ import {
   getProjectID,
   getToken,
   interpretAuthError,
+  interpretProjectConflict,
   interpretTooManyJobs,
   makeGrillError,
   projectIDSource,
@@ -63,6 +64,8 @@ export async function grillIngest(
       makeGrillError(ErrorCode.TooManyJobs, throttle.message, { retryAfterSeconds: throttle.retryAfterSeconds }),
     );
   }
+  const conflict = interpretProjectConflict(res.status, res.body, "grill ingest");
+  if (conflict) return codedError(ErrorCode.InvalidInput, conflict.message);
   if (res.status !== 201) {
     const text = new TextDecoder("utf-8").decode(res.body);
     return codedError(ErrorCode.UpstreamError, `grill ingest: HTTP ${res.status}: ${text}`, { httpStatus: res.status });
@@ -73,7 +76,7 @@ export async function grillIngest(
     return codedError(ErrorCode.ParseError, `grill ingest: could not parse job_id from response: ${text}`);
   }
 
-  const { source } = projectIDSource(args.project_id);
+  const { source } = projectIDSource(token, args.project_id);
   const scope = await resolveScope(client, token, projectID, "", source);
   const scopeOut = scopeFields(scope);
   return successResult({ job_id: job.job_id, ...(scopeOut ? { scope: scopeOut } : {}) });

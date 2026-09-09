@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { GrillClient } from "./client/grillClient.js";
+import { isProjectKey, SOURCE_PROJECT_KEY } from "./common.js";
 
 // -- Project Scope ---------------------------------------------------
 //
@@ -124,15 +125,42 @@ async function fetchProjectsCached(client: GrillClient, token: string): Promise<
   if (cached) return cached;
   let res;
   try {
-    res = await client.listProjects("grill");
+    // /projects refuses project keys (403). /projects/info returns the one
+    // project the key is bound to; wrap it as a single-entry listing so the
+    // scope mapping can name it.
+    res = isProjectKey(token) ? await client.projectInfo() : await client.listProjects("grill");
   } catch {
     return null;
   }
   if (res.status !== 200) return null;
-  const projects = parseProjects(res.body);
+  const projects = isProjectKey(token) ? parseProjectInfo(res.body) : parseProjects(res.body);
   if (!projects) return null;
   cachePut(token, projects);
   return projects;
+}
+
+/** Decodes a /projects/info response (one project) into a one-entry listing. */
+export function parseProjectInfo(body: Uint8Array): GrillProject[] | null {
+  let p: unknown;
+  try {
+    p = JSON.parse(new TextDecoder("utf-8").decode(body));
+  } catch {
+    return null;
+  }
+  if (p === null || typeof p !== "object" || Array.isArray(p)) return null;
+  const r = p as Record<string, unknown>;
+  const entry: GrillProject = {
+    id: str(r.id),
+    project_id: str(r.project_id),
+    account_id: str(r.account_id),
+    name: str(r.name),
+    product: str(r.product),
+    protected: r.protected === true,
+    orga_id: str(r.orga_id),
+    is_default: r.is_default === true,
+  };
+  if (entry.id === "" && entry.project_id === "") return null;
+  return [entry];
 }
 
 /**
@@ -181,6 +209,11 @@ export function scopeFromProjects(
     }
   } else if (resolvedProjectID !== "") {
     p = find((x) => x.project_id === resolvedProjectID || x.id === resolvedProjectID);
+  } else if (source === SOURCE_PROJECT_KEY) {
+    // A project API key binds exactly one project; the listing (from
+    // /projects/info) has that single entry. Never fall through to the
+    // account-default lookup — the key is the selection.
+    if (projects.length === 1) p = projects[0];
   } else {
     // Account default: the key owner's default grill workspace (own account, not
     // an org's) — identified by is_default with no orga.
@@ -196,7 +229,11 @@ export function scopeFromProjects(
     }
   }
 
-  if (scope.project_name && scope.is_default) {
+  if (source === SOURCE_PROJECT_KEY && scope.project_name) {
+    scope.hint = `Scoped to project "${scope.project_name}" — the project bound to your project API key.`;
+  } else if (source === SOURCE_PROJECT_KEY) {
+    scope.hint = "Scoped to the project bound to your project API key (name unavailable — /projects/info did not answer).";
+  } else if (scope.project_name && scope.is_default) {
     scope.hint =
       `This belongs to your default grill workspace "${scope.project_name}" — no specific project is selected. ` +
       `Pass project_id or set POMA_PROJECT_ID to target another project.`;
@@ -204,6 +241,11 @@ export function scopeFromProjects(
     scope.hint = `Scoped to project "${scope.project_name}".`;
   } else if (resolvedProjectID !== "") {
     scope.hint = `Scoped to project_id ${resolvedProjectID} (name unavailable).`;
+  } else if (namespace.startsWith("proj_")) {
+    // The server reported a named-project namespace but no listing matched it
+    // (e.g. the projects call failed). Never claim "default workspace" for
+    // data that is demonstrably in a named project.
+    scope.hint = `Scoped to project namespace ${namespace} (name unavailable).`;
   } else {
     scope.hint = "This belongs to your default grill workspace — no specific project is selected.";
   }
