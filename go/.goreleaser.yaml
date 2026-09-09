@@ -19,7 +19,7 @@ before:
 
 builds:
   - id: poma-grill-mcp
-    main: .
+    main: ./cmd/poma-grill-mcp
     binary: poma-grill-mcp
     env:
       - CGO_ENABLED=0
