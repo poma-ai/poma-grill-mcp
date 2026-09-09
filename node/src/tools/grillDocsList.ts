@@ -86,7 +86,10 @@ export async function grillDocsList(
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)");
+    // documents: [] mirrors Go's docsListError — the output schema declares an array.
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)", {
+      extra: { documents: [] },
+    });
   }
 
   const projectID = getProjectID(args.project_id);
@@ -143,7 +146,7 @@ export async function grillDocsList(
       // expired, or forbidden and every further page would fail the same way.
       // Surface the actionable structured error as a hard error on any page,
       // rather than burying it in a note.
-      if (page === 0 || result.auth) return toolError(result.err);
+      if (page === 0 || result.auth) return toolError(result.err, { documents: [] });
       // Keep the pages already fetched; surface the gap in the note.
       truncated = true;
       pagingErr = result.err.error;
