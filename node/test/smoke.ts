@@ -572,6 +572,61 @@ async function errorCodeTests(
   }
 }
 
+// HTTP (hosted) mode: file_path must be refused because the path would be
+// resolved on the server, not the caller's machine. Spawns `-http` on a free
+// port and drives the stateless Streamable HTTP transport with fetch.
+async function httpModeTests(): Promise<void> {
+  process.stdout.write("http-mode tests:\n");
+  const port = await new Promise<number>((res) => {
+    const s = createServer();
+    s.listen(0, "127.0.0.1", () => {
+      const { port } = s.address() as AddressInfo;
+      s.close(() => res(port));
+    });
+  });
+  const { POMA_API_KEY: _acc, POMA_GRILL_API_KEY: _proj, GRILL_INGEST_ALLOWED_PREFIX: _pre, ...base } = process.env;
+  const proc = spawn(process.execPath, [BINARY, "-http", `127.0.0.1:${port}`], {
+    env: { ...base, POMA_API_KEY: "smoke-fake-key" },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  await new Promise<void>((res, rej) => {
+    const t = setTimeout(() => rej(new Error("http server did not start")), 10_000);
+    proc.stderr.on("data", (d: Buffer) => {
+      if (d.toString().includes("listening")) {
+        clearTimeout(t);
+        res();
+      }
+    });
+    proc.once("exit", (code) => rej(new Error(`http server exited early (${code})`)));
+  });
+  try {
+    let rpcId = 100;
+    const call = async (name: string, args: Record<string, unknown>): Promise<EnvelopeContent & { isError?: boolean }> => {
+      const r = await fetch(`http://127.0.0.1:${port}/`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: rpcId++, method: "tools/call", params: { name, arguments: args } }),
+      });
+      const text = await r.text();
+      const line = text.split("\n").find((l) => l.startsWith("data: "));
+      const json = JSON.parse(line ? line.slice("data: ".length) : text) as {
+        result?: { isError?: boolean; structuredContent?: EnvelopeContent };
+      };
+      return { ...(json.result?.structuredContent ?? {}), isError: json.result?.isError };
+    };
+    const single = await call("grill_ingest", { file_path: "/etc/hosts" });
+    let ok = single.isError === true && single.code === "invalid_input" && (single.error ?? "").includes("hosted HTTP server");
+    record("http mode: grill_ingest file_path → invalid_input", ok, ok ? undefined : JSON.stringify(single));
+    const batch = await call("grill_ingest_batch", { file_paths: ["/etc/hosts"] });
+    const first = batch.results?.[0];
+    ok = first?.code === "invalid_input" && (first?.error ?? "").includes("hosted HTTP server");
+    record("http mode: grill_ingest_batch file_paths → invalid_input per file", ok, ok ? undefined : JSON.stringify(batch));
+  } finally {
+    proc.kill();
+    await new Promise<void>((res) => proc.once("exit", () => res()));
+  }
+}
+
 async function main(): Promise<void> {
   if (!existsSync(BINARY)) {
     process.stderr.write(`error: ${BINARY} not found. Run \`npm run build\` first.\n`);
@@ -618,6 +673,8 @@ async function main(): Promise<void> {
     await noTokenClient.close();
     await errStub.close();
   }
+
+  await httpModeTests();
 
   const passed = results.filter((r) => r.ok).length;
   const failed = results.length - passed;

@@ -35,7 +35,7 @@ Do not retry. Fix the cause or abort and tell the user.
 | `payment_required` | Plan limit hit. | Upgrade at [console.poma-ai.com](https://console.poma-ai.com). |
 | `forbidden` | Credential is valid but not authorized for this project or action. | Check the project with `grill_projects`; the key may be scoped to a different one. |
 | `project_protected` | The target project blocks this operation. | Choose another project or lift the protection in the console. |
-| `invalid_input` | Bad arguments — e.g. zero or two of `file_path`/`file_base64`/`url`, a path outside `GRILL_INGEST_ALLOWED_PREFIX`, `file_path` on the hosted HTTP server (no `GRILL_INGEST_ALLOWED_PREFIX` set), or a payload over `GRILL_INGEST_MAX_BYTES`. | Fix the arguments. Never retry unchanged. |
+| `invalid_input` | Bad arguments — e.g. zero or two of `file_path`/`file_base64`/`url`, a path outside `GRILL_INGEST_ALLOWED_PREFIX`, `file_path` on the hosted HTTP server (refused unless the operator set `GRILL_INGEST_ALLOWED_PREFIX` to a dedicated directory), or a payload over `GRILL_INGEST_MAX_BYTES`. | Fix the arguments. Never retry unchanged. |
 | `parse_error` | The API response could not be decoded. | Report it; likely a server-side or version-skew bug. |
 | `job_failed` | Ingestion ran and failed — usually an unsupported or corrupt file. | Report the message to the user. Re-uploading the same bytes will fail the same way. |
 
