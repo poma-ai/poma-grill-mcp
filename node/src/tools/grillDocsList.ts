@@ -6,6 +6,7 @@ import {
   getToken,
   type GrillError,
   interpretAuthError,
+  interpretProjectConflict,
   makeGrillError,
   projectIDSource,
   successResult,
@@ -107,6 +108,8 @@ export async function grillDocsList(
 
     const authErr = interpretAuthError(args.token, res.status, res.body, "grill docs list");
     if (authErr) return { err: makeGrillError(authErr.code, authErr.message), auth: true };
+    const conflict = interpretProjectConflict(res.status, res.body, "grill docs list");
+    if (conflict) return { err: makeGrillError(ErrorCode.InvalidInput, conflict.message), auth: true };
     const text = new TextDecoder("utf-8").decode(res.body);
     if (res.status !== 200) {
       return {
@@ -159,7 +162,7 @@ export async function grillDocsList(
   if (total === 0) total = documents.length; // pre-pagination API always sends total_documents == len(documents)
 
   const note = grillDocsListNote(documents.length, total, truncated, degraded, pagingErr);
-  const { source } = projectIDSource(args.project_id);
+  const { source } = projectIDSource(token, args.project_id);
   const scope = await resolveScope(client, token, projectID, namespace, source);
   const scopeOut = scopeFields(scope);
   return successResult({

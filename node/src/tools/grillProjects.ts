@@ -1,5 +1,5 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { codedError, ErrorCode, getToken, interpretAuthError, successResult, type ToolContext } from "../common.js";
+import { codedError, ErrorCode, getToken, interpretAuthError, isProjectKey, successResult, type ToolContext } from "../common.js";
 import { GrillClient } from "../client/grillClient.js";
 
 interface ProjectInfo {
@@ -24,9 +24,14 @@ export async function grillProjects(
 
   // GrillClient with no projectID — listProjects doesn't send X-Project-ID.
   const client = new GrillClient(token);
+  // A project API key cannot list the account's projects (the gateway answers
+  // 403 "project API keys are not accepted on this endpoint"). It can ask
+  // /projects/info for the one project it is bound to — answer with that
+  // instead of a dead-end forbidden error.
+  const projectKey = isProjectKey(token);
   let res;
   try {
-    res = await client.listProjects(product);
+    res = projectKey ? await client.projectInfo() : await client.listProjects(product);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return codedError(ErrorCode.TransportError, `grill projects: ${msg}`);
@@ -44,7 +49,12 @@ export async function grillProjects(
   let projects: ProjectInfo[];
   try {
     const parsed = JSON.parse(text) as unknown;
-    if (Array.isArray(parsed)) {
+    if (projectKey) {
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || typeof (parsed as ProjectInfo).id !== "string") {
+        return codedError(ErrorCode.ParseError, `grill projects: parse /projects/info response: ${text}`);
+      }
+      projects = [parsed as ProjectInfo];
+    } else if (Array.isArray(parsed)) {
       projects = parsed as ProjectInfo[];
     } else if (
       parsed !== null &&
@@ -65,7 +75,11 @@ export async function grillProjects(
     return successResult({ projects: "No accessible projects found." });
   }
 
-  const lines = ["Projects:"];
+  const lines = [
+    projectKey
+      ? "Project bound to this project API key (project keys cannot list an account's other projects; use an account API key or login token for the full list):"
+      : "Projects:",
+  ];
   for (const p of projects) {
     let line = `- ${p.name ?? p.id} (project_id: ${p.id}, product: ${p.product ?? "unknown"}, protected: ${p.protected ?? false}`;
     if (p.org_id) line += `, org: ${p.org_id}`;
