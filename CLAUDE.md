@@ -72,7 +72,7 @@ The server has two modes, selected at startup:
 
 ## Release
 
-Push to the `release` branch to trigger the CI pipeline (`.github/workflows/release.yml`). It auto-determines a semver tag, builds multi-platform binaries, publishes to GitHub Releases, updates the Homebrew tap (`poma-ai/homebrew-poma-mcp`), and signs Docker images with cosign.
+Push to the `release` branch to trigger the CI pipeline (`.github/workflows/release.yml`). It auto-determines a semver tag (and pushes the matching `go/vX.Y.Z` tag for the nested Go module), builds multi-platform binaries, publishes to GitHub Releases, updates the Homebrew tap (`poma-ai/homebrew-poma-grill-mcp`, formula `poma-grill-mcp`), and signs Docker images with cosign.
 ## Domain
 
 The canonical company domain is **`poma-ai.com`** (e.g. `api.poma-ai.com`, `storage.poma-ai.com`, emails `@poma-ai.com`; GitHub org `poma-ai`). **Never write `poma.ai`** — it is not our domain and has shipped broken links (Slack notifier, MCP examples). Always `poma-ai.com`; fix any `poma.ai` on sight.

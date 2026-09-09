@@ -49,6 +49,11 @@ jobs:
           # Move the tag to HEAD (creates it if it doesn't exist).
           git tag -fa "$TAG" -m "Release $TAG"
           git push origin "$TAG" --force
+          # The Go module lives in go/, so Go only honours tags prefixed with the
+          # module directory: go/vX.Y.Z is what `go install …/go/cmd/poma-grill-mcp@vX.Y.Z`
+          # and @latest resolve against.
+          git tag -fa "go/$TAG" -m "Release $TAG (Go module go/)"
+          git push origin "go/$TAG" --force
 
       # ── Linux binaries (quick, direct download) ──────────────────────────────
       - name: Build Linux binaries
