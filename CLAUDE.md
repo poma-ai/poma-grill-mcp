@@ -19,7 +19,7 @@ All Go commands and references below assume `cd go` first.
 
 ```bash
 # Build
-cd go && go build -o bin/poma-grill-mcp .
+cd go && go build -o bin/poma-grill-mcp ./cmd/poma-grill-mcp
 
 # Run in stdio mode (default for IDE integration)
 POMA_API_KEY=<key> ./go/bin/poma-grill-mcp -input -
@@ -27,14 +27,14 @@ POMA_API_KEY=<key> ./go/bin/poma-grill-mcp -input -
 # Run in HTTP mode
 POMA_API_KEY=<key> ./go/bin/poma-grill-mcp -http :8080
 
-# Integration test (requires POMA_API_KEY)
-POMA_API_KEY=<key> bash go/test.sh
+# Go unit tests (httptest-backed; no network, no key)
+cd go && go vet ./... && go test ./...
 
-# Run with verbose MCP logging
-MCP_VERBOSE=1 POMA_API_KEY=<key> bash go/test.sh
+# Node typecheck + offline smoke test (spawns the built Node server over stdio)
+cd node && npm run typecheck && npm run smoke
 ```
 
-There are no unit tests — `test.sh` is the test harness (Python-based MCP client that spawns the binary).
+`go install github.com/poma-ai/poma-grill-mcp/go/cmd/poma-grill-mcp@latest` works because the Go module is `github.com/poma-ai/poma-grill-mcp/go` (it lives in `go/`, so the module path carries the `/go` suffix) and the main package sits in `cmd/poma-grill-mcp` so the installed binary is named after it.
 
 ## Architecture
 

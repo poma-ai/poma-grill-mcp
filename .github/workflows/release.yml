@@ -58,8 +58,8 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p dist/linux
-          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/linux/poma-grill-mcp-linux-amd64 .
-          GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/linux/poma-grill-mcp-linux-arm64 .
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/linux/poma-grill-mcp-linux-amd64 ./cmd/poma-grill-mcp
+          GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/linux/poma-grill-mcp-linux-arm64 ./cmd/poma-grill-mcp
 
       - name: Upload Linux binaries to release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
