@@ -1,7 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { codedError, ErrorCode, getToken, makeGrillError, successResult, toolError, type ToolContext } from "../common.js";
 import { GrillClient } from "../client/grillClient.js";
-import { streamJobStatus, type JobStatusFull } from "../client/statusStream.js";
+import { lastGrillOutcome, streamJobStatus, type JobStatusFull } from "../client/statusStream.js";
 
 export async function grillIngestResume(
   args: Record<string, unknown>,
@@ -48,5 +48,6 @@ export async function grillIngestResume(
     }
   }
 
-  return successResult({ job_id: jobID, events });
+  const grill = lastGrillOutcome(events);
+  return successResult({ job_id: jobID, events, ...(grill ? { grill } : {}) });
 }

@@ -9,12 +9,15 @@ import {
   type ToolContext,
 } from "../common.js";
 import { GrillClient } from "../client/grillClient.js";
-import { isTerminalGrillStatus, peekJobStatus } from "../client/statusStream.js";
+import { grillOutcomeFields, isTerminalGrillStatus, peekJobStatus, type JobGrillOutcome } from "../client/statusStream.js";
 
 interface JobStatusResult {
   job_id: string;
   status?: string;
   is_terminal: boolean;
+  // Gateway dedup/replacement outcome (poma-services-go#133); omitted when
+  // the gateway did not send one.
+  grill?: JobGrillOutcome;
   error?: string;
   code?: string;
   retryable?: boolean;
@@ -72,10 +75,12 @@ export async function grillJobsStatus(
           }
           const s = peek.status;
           const terminal = s.is_terminal || isTerminalGrillStatus(s.status);
+          const grill = grillOutcomeFields(s.grill);
           const res: JobStatusResult = {
             job_id: id,
             status: s.status,
             is_terminal: terminal,
+            ...(grill ? { grill } : {}),
             ...(s.error ? { error: s.error } : {}),
           };
           if (res.status === "failed" || (res.error && res.error !== "")) {

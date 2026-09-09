@@ -113,11 +113,26 @@ func serializeLabels(labels map[string]string) string {
 	return strings.Join(parts, ",")
 }
 
+// grillOutcomeSchema describes the optional `grill` object the gateway attaches
+// to a job status (poma-services-go#133). Omitted when the gateway did not send it.
+// Sharing this pointer across tools is fine (like scopeSchema); never reference it
+// twice within one tool's schema — jsonschema-go requires a tree (see copySchema).
+var grillOutcomeSchema = &jsonschema.Schema{
+	Type:        "object",
+	Description: "Grill outcome for this job, present only when the gateway reports it. Absent on older gateways or before the job reaches the grill stage.",
+	Properties: map[string]*jsonschema.Schema{
+		"deduplicated":     {Type: "boolean", Description: "True when the same input bytes under the same conversion build were already indexed: nothing new was stored and the job's pages do not count against storage (conversion credits are still consumed). The existing document is doc_id."},
+		"doc_id":           {Type: "string", Description: "The document id to use as doc_filter in grill_search. May differ from job_id when deduplicated is true."},
+		"replaced_doc_ids": {Type: "array", Description: "Documents grill evicted in favour of this job after a conversion-build change. Omitted when none.", Items: &jsonschema.Schema{Type: "string"}},
+	},
+}
+
 var grillIngestOutputSchema = &jsonschema.Schema{
 	Type: "object",
 	Properties: map[string]*jsonschema.Schema{
 		"job_id":              {Type: "string"},
 		"events":              {Type: "array"},
+		"grill":               grillOutcomeSchema,
 		"scope":               scopeSchema,
 		"error":               {Type: "string"},
 		"code":                errorCodeSchema,
@@ -135,7 +150,7 @@ var grillIngestTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(true),
 	},
-	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local), file_base64 (small), or url (the server fetches it). Returns job_id. Once done, doc_id equals job_id for grill_search. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop." + errorHandlingGuidance,
+	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local), file_base64 (small), or url (the server fetches it). Returns job_id. Once done, doc_id equals job_id for grill_search — unless grill_jobs_status reports grill.deduplicated=true for the job, in which case use grill.doc_id. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop." + errorHandlingGuidance,
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -147,7 +162,7 @@ var grillIngestSyncTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(true),
 	},
-	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local), file_base64 (small), or url (the server fetches it). Returns job_id and status events. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees." + errorHandlingGuidance,
+	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local), file_base64 (small), or url (the server fetches it). Returns job_id and status events. When the final status carries a `grill` object, grill.deduplicated=true means the same file bytes were already indexed under the same conversion build (nothing new was stored) and grill.doc_id is the id to use as doc_filter — it may differ from job_id on a dedup hit; grill.replaced_doc_ids lists documents evicted in favour of this job. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees." + errorHandlingGuidance,
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -165,7 +180,10 @@ type GrillIngestInput struct {
 type GrillIngestOutput struct {
 	JobID  string          `json:"job_id,omitempty"`
 	Events []jobStatusFull `json:"events,omitempty"`
-	Scope  *GrillScope     `json:"scope,omitempty"`
+	// Grill is the gateway's dedup/replacement outcome from the final status
+	// event (poma-services-go#133); nil when the gateway did not send one.
+	Grill *jobGrillOutcome `json:"grill,omitempty"`
+	Scope *GrillScope      `json:"scope,omitempty"`
 	// GrillError promotes error, code, retryable, retry_after_seconds to the top level.
 	GrillError
 }
@@ -258,7 +276,7 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 		}
 	}
 	slog.Info("grill ingest done", "job_id", j.JobID)
-	return nil, GrillIngestOutput{JobID: j.JobID, Events: events, Scope: scope}, nil
+	return nil, GrillIngestOutput{JobID: j.JobID, Events: events, Grill: lastGrillOutcome(events), Scope: scope}, nil
 }
 
 // -- Grill Ingest Resume ---------------------------------------------
@@ -331,7 +349,7 @@ func GrillIngestResume(ctx context.Context, req *mcp.CallToolRequest, input Gril
 		}
 	}
 	slog.Info("grill ingest resume done", "job_id", input.JobID)
-	return nil, GrillIngestOutput{JobID: input.JobID, Events: events}, nil
+	return nil, GrillIngestOutput{JobID: input.JobID, Events: events, Grill: lastGrillOutcome(events)}, nil
 }
 
 // -- Grill Search ----------------------------------------------------
@@ -389,7 +407,7 @@ var grillSearchTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(true),
 	},
-	Description:  "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id, which equals the job_id from grill_ingest); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k. The response includes a `scope` object identifying which project was searched — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results." + errorHandlingGuidance,
+	Description:  "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id: the job_id from grill_ingest, or grill.doc_id when the ingest or grill_jobs_status reported grill.deduplicated=true — the two differ on a dedup hit); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k. The response includes a `scope` object identifying which project was searched — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results." + errorHandlingGuidance,
 	InputSchema:  grillSearchInputSchema,
 	OutputSchema: grillSearchOutputSchema,
 }
@@ -1094,10 +1112,31 @@ var grillJobsStatusInputSchema = &jsonschema.Schema{
 	Required: []string{"job_ids"},
 }
 
+// copySchema returns a shallow copy of a leaf schema. jsonschema-go requires a
+// tool's schema to be a tree, so a shared leaf (errorCodeSchema etc.) that
+// already appears at the top level must be copied, not re-pointed, when it is
+// also used inside a nested items schema.
+func copySchema(s *jsonschema.Schema) *jsonschema.Schema {
+	c := *s
+	return &c
+}
+
 var grillJobsStatusOutputSchema = &jsonschema.Schema{
 	Type: "object",
 	Properties: map[string]*jsonschema.Schema{
-		"results":             {Type: "array"},
+		"results": {Type: "array", Items: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"job_id":              {Type: "string"},
+				"status":              {Type: "string"},
+				"is_terminal":         {Type: "boolean"},
+				"grill":               grillOutcomeSchema,
+				"error":               {Type: "string"},
+				"code":                copySchema(errorCodeSchema),
+				"retryable":           copySchema(retryableSchema),
+				"retry_after_seconds": copySchema(retryAfterSchema),
+			},
+		}},
 		"pending_count":       {Type: "integer"},
 		"done_count":          {Type: "integer"},
 		"failed_count":        {Type: "integer"},
@@ -1115,7 +1154,7 @@ var grillJobsStatusTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(true),
 	},
-	Description:  "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming — reporting progress for jobs created by grill_ingest or grill_ingest_batch. pending_count/done_count/failed_count give a quick summary." + errorHandlingGuidance,
+	Description:  "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming — reporting progress for jobs created by grill_ingest or grill_ingest_batch. pending_count/done_count/failed_count give a quick summary. When a result carries a `grill` object, grill.deduplicated=true means the same file bytes were already indexed under the same conversion build (nothing new was stored) and grill.doc_id is the id to use as doc_filter — it may differ from job_id on a dedup hit; grill.replaced_doc_ids lists documents evicted in favour of this job." + errorHandlingGuidance,
 	InputSchema:  grillJobsStatusInputSchema,
 	OutputSchema: grillJobsStatusOutputSchema,
 }
@@ -1129,6 +1168,9 @@ type GrillJobStatusResult struct {
 	JobID      string `json:"job_id"`
 	Status     string `json:"status,omitempty"`
 	IsTerminal bool   `json:"is_terminal"`
+	// Grill is the gateway's dedup/replacement outcome (poma-services-go#133);
+	// nil when the gateway did not send one.
+	Grill *jobGrillOutcome `json:"grill,omitempty"`
 	// GrillError promotes error, code, retryable, retry_after_seconds to the top level.
 	GrillError
 }
@@ -1184,7 +1226,7 @@ func GrillJobsStatus(ctx context.Context, _ *mcp.CallToolRequest, input GrillJob
 				return
 			}
 			terminal := s.IsTerminal || isTerminalGrillStatus(s.Status)
-			res := GrillJobStatusResult{JobID: id, Status: s.Status, IsTerminal: terminal, GrillError: GrillError{Error: s.Error}}
+			res := GrillJobStatusResult{JobID: id, Status: s.Status, IsTerminal: terminal, Grill: s.Grill, GrillError: GrillError{Error: s.Error}}
 			if res.Status == "failed" || res.Error != "" {
 				// Terminal job failure (or an error surfaced on a non-terminal status)
 				// — not retryable; fix the source doc.

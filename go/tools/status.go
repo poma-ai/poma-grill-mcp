@@ -16,9 +16,36 @@ import (
 
 // jobStatusFull is the full SSE event payload from the status server, including fields the client library does not expose.
 type jobStatusFull struct {
-	IsTerminal bool   `json:"is_terminal"`
-	Status     string `json:"status"`
-	Error      string `json:"error,omitempty"`
+	IsTerminal bool             `json:"is_terminal"`
+	Status     string           `json:"status"`
+	Error      string           `json:"error,omitempty"`
+	Grill      *jobGrillOutcome `json:"grill,omitempty"`
+}
+
+// jobGrillOutcome is the optional `grill` object the gateway attaches to a job
+// status (poma-services-go#133). Nil when the gateway did not send it — older
+// gateways, non-grill jobs, or a job that has not reached the grill stage yet.
+//
+// Deduplicated: the same input bytes under the same conversion build were
+// already indexed; nothing new was stored and DocID names the existing
+// document (it may differ from the job_id). ReplacedDocIDs: documents grill
+// evicted in favour of this job after a conversion-build change.
+type jobGrillOutcome struct {
+	Deduplicated   bool     `json:"deduplicated"`
+	DocID          string   `json:"doc_id,omitempty"`
+	ReplacedDocIDs []string `json:"replaced_doc_ids,omitempty"`
+}
+
+// lastGrillOutcome returns the grill object of the most recent status event
+// that carried one, or nil. The gateway attaches it to the terminal status, so
+// this is the outcome to surface at the top level of a wait-style tool output.
+func lastGrillOutcome(events []jobStatusFull) *jobGrillOutcome {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Grill != nil {
+			return events[i].Grill
+		}
+	}
+	return nil
 }
 
 // jobProgressWire is the JSON payload in MCP progress notifications.

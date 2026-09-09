@@ -14,7 +14,7 @@ import {
 } from "../common.js";
 import { GrillClient, parseJob } from "../client/grillClient.js";
 import { parseLabelsArg, resolveIngestPayload, serializeLabels } from "../client/ingestPayload.js";
-import { streamJobStatus, type JobStatusFull } from "../client/statusStream.js";
+import { lastGrillOutcome, streamJobStatus, type JobStatusFull } from "../client/statusStream.js";
 import { resolveScope, scopeFields } from "../scope.js";
 
 export async function grillIngestSync(
@@ -113,5 +113,6 @@ export async function grillIngestSync(
   const { source } = projectIDSource(args.project_id);
   const scope = await resolveScope(client, token, projectID, "", source);
   const scopeOut = scopeFields(scope);
-  return successResult({ job_id: job.job_id, events, ...(scopeOut ? { scope: scopeOut } : {}) });
+  const grill = lastGrillOutcome(events);
+  return successResult({ job_id: job.job_id, events, ...(grill ? { grill } : {}), ...(scopeOut ? { scope: scopeOut } : {}) });
 }
