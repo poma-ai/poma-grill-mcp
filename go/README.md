@@ -10,11 +10,12 @@ Sign up at [console.poma-ai.com](https://console.poma-ai.com) and copy your API 
 
 ## 2. Install
 
-**`go install`** (Go 1.22+)
+**`go install`** (Go 1.25+)
 ```bash
 go install github.com/poma-ai/poma-grill-mcp/go/cmd/poma-grill-mcp@latest
 which poma-grill-mcp   # note the full path for step 3
 ```
+`@latest` resolves against the `go/vX.Y.Z` tags the release workflow pushes. Until the first Go release exists it installs the default branch head; pin a commit with `@<sha>` if you need reproducibility.
 
 **From source**
 ```bash
