@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createReadStream, type ReadStream } from "node:fs";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { setHTTPMode } from "./client/ingestPayload.js";
 import { Readable } from "node:stream";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -63,6 +64,9 @@ async function runStdio(inputPath: string): Promise<void> {
 
 async function runHTTP(addr: string): Promise<void> {
   const { hostname, port } = parseAddr(addr);
+  // file_path would read this process's filesystem; refuse it on the hosted
+  // server unless GRILL_INGEST_ALLOWED_PREFIX opts a directory in.
+  setHTTPMode(true);
   const server = createServer();
   // Stateless mode: each request is independent — no session id tracking.
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
