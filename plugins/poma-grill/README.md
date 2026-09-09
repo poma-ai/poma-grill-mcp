@@ -41,7 +41,7 @@ are in [MANUAL.md](MANUAL.md) — the short version is
 {
   "poma-grill": {
     "type": "streamable-http",
-    "url": "https://mcp.poma-ai.com/grill"
+    "url": "https://mcp.poma-ai.com"
   }
 }
 ```
@@ -57,7 +57,7 @@ Prefer an API key over OAuth? Add headers:
 {
   "poma-grill": {
     "type": "streamable-http",
-    "url": "https://mcp.poma-ai.com/grill",
+    "url": "https://mcp.poma-ai.com",
     "headers": { "x-api-key": "your-api-key" }
   }
 }
