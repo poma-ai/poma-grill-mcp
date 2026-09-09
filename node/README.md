@@ -135,7 +135,8 @@ All read at runtime — nothing is baked in at build/publish time.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `POMA_API_KEY` | (unset) | API token. Fallback when a tool call doesn't pass an explicit `token`. Without it, every tool returns `"token is required …"`. |
+| `POMA_GRILL_API_KEY` | (unset) | Grill **project** key (`poma_proj_gr_…`). Fallback when a tool call doesn't pass an explicit `token`; checked before `POMA_API_KEY`. |
+| `POMA_API_KEY` | (unset) | **Account** key (`poma_acc_…`) or login token; scope with `POMA_PROJECT_ID`. A project key here still works (legacy). Without either variable, every tool returns `"token is required …"`. |
 | `POMA_API_BASE_URL` | `https://api.poma-ai.com` | Override the API host. Auto-appends `/v3` unless the URL already ends in `/vN`. |
 | `POMA_STATUS_API_BASE_URL` | `https://api.poma-ai.com/status/v1` (or `${POMA_API_BASE_URL}/status/v1`) | Override the SSE status-stream host. Same versioning rule. |
 | `GRILL_INGEST_ALLOWED_PREFIX` | (unset = no restriction) | Security guard for `file_path`. When set, ingest rejects any path that doesn't resolve (after symlink evaluation) under this directory. |

@@ -170,7 +170,7 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 	token := getToken(r.Context(), "")
 	if token == "" {
 		writeIngestUploadError(w, http.StatusUnauthorized, GrillError{
-			Error: "missing API token (x-api-key, Authorization: Bearer, or POMA_API_KEY)",
+			Error: "missing API token (x-api-key, Authorization: Bearer, POMA_GRILL_API_KEY, or POMA_API_KEY)",
 			Code:  CodeMissingToken,
 		})
 		return

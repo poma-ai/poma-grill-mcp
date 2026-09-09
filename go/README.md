@@ -172,7 +172,7 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 | `url` | string | one-of | Remote URL the **POMA Grill server** fetches and ingests. The MCP itself does not download it. |
 | `filename` | string | no | Original basename (e.g. `report.pdf`). With `file_path`, defaults to the path basename; otherwise inferred from bytes when possible. |
 | `labels` | object | no | Optional `{key: value}` labels attached to the document (sent as the `X-Labels` header). Avoid `:` and `,` in keys/values. |
-| `token` | string | no | API key — omit if `POMA_API_KEY` is set on the server process |
+| `token` | string | no | API key — omit if `POMA_GRILL_API_KEY` or `POMA_API_KEY` is set on the server process |
 
 **`file_path` notes**
 

@@ -77,7 +77,7 @@ var grillIngestInputSchema = &jsonschema.Schema{
 		},
 		"token": {
 			Type:        "string",
-			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
 		},
 		"project_id": projectIDSchema,
 	},
@@ -181,7 +181,7 @@ func GrillIngestSync(ctx context.Context, req *mcp.CallToolRequest, input GrillI
 func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input GrillIngestInput, waitTerminal bool) (*mcp.CallToolResult, GrillIngestOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillIngestOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
+		return errResult(), GrillIngestOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)")}, nil
 	}
 
 	projectID := getProjectID(input.ProjectID)
@@ -272,7 +272,7 @@ var grillIngestResumeInputSchema = &jsonschema.Schema{
 		},
 		"token": {
 			Type:        "string",
-			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
 		},
 	},
 	Required: []string{"job_id"},
@@ -300,7 +300,7 @@ type GrillIngestResumeInput struct {
 func GrillIngestResume(ctx context.Context, req *mcp.CallToolRequest, input GrillIngestResumeInput) (*mcp.CallToolResult, GrillIngestOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillIngestOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
+		return errResult(), GrillIngestOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)")}, nil
 	}
 	if input.JobID == "" {
 		return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "job_id is required")}, nil
@@ -362,7 +362,7 @@ var grillSearchInputSchema = &jsonschema.Schema{
 		},
 		"token": {
 			Type:        "string",
-			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
 		},
 		"project_id": projectIDSchema,
 	},
@@ -421,7 +421,7 @@ type GrillSearchOutput struct {
 func GrillSearch(ctx context.Context, _ *mcp.CallToolRequest, input GrillSearchInput) (*mcp.CallToolResult, GrillSearchOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillSearchOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
+		return errResult(), GrillSearchOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)")}, nil
 	}
 	if input.Query == "" {
 		return errResult(), GrillSearchOutput{GrillError: errOut(CodeInvalidInput, "query is required")}, nil
@@ -687,7 +687,7 @@ var grillDocsListInputSchema = &jsonschema.Schema{
 	Properties: map[string]*jsonschema.Schema{
 		"token": {
 			Type:        "string",
-			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
 		},
 		"project_id": projectIDSchema,
 	},
@@ -796,7 +796,7 @@ func grillDocsListNote(shown, total int, truncated, degraded bool, pagingErr str
 func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsListInput) (*mcp.CallToolResult, GrillDocsListOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillDocsListOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
+		return errResult(), GrillDocsListOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)")}, nil
 	}
 
 	projectID := getProjectID(input.ProjectID)
@@ -895,7 +895,7 @@ var grillIngestBatchInputSchema = &jsonschema.Schema{
 		},
 		"token": {
 			Type:        "string",
-			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
 		},
 		"concurrency": {
 			Type:        "integer",
@@ -961,7 +961,7 @@ type GrillIngestBatchOutput struct {
 func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIngestBatchInput) (*mcp.CallToolResult, GrillIngestBatchOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillIngestBatchOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
+		return errResult(), GrillIngestBatchOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)")}, nil
 	}
 	if len(input.FilePaths) == 0 {
 		return errResult(), GrillIngestBatchOutput{GrillError: errOut(CodeInvalidInput, "file_paths is required")}, nil
@@ -1088,7 +1088,7 @@ var grillJobsStatusInputSchema = &jsonschema.Schema{
 		},
 		"token": {
 			Type:        "string",
-			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
 		},
 	},
 	Required: []string{"job_ids"},
@@ -1145,7 +1145,7 @@ type GrillJobsStatusOutput struct {
 func GrillJobsStatus(ctx context.Context, _ *mcp.CallToolRequest, input GrillJobsStatusInput) (*mcp.CallToolResult, GrillJobsStatusOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillJobsStatusOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
+		return errResult(), GrillJobsStatusOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)")}, nil
 	}
 	if len(input.JobIDs) == 0 {
 		return errResult(), GrillJobsStatusOutput{GrillError: errOut(CodeInvalidInput, "job_ids is required")}, nil
@@ -1222,7 +1222,7 @@ var grillProjectsInputSchema = &jsonschema.Schema{
 	Properties: map[string]*jsonschema.Schema{
 		"token": {
 			Type:        "string",
-			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
 		},
 		"product": {
 			Type:        "string",
@@ -1296,7 +1296,7 @@ func parseProjects(body []byte) ([]grillProject, error) {
 func GrillProjects(ctx context.Context, _ *mcp.CallToolRequest, input GrillProjectsInput) (*mcp.CallToolResult, GrillProjectsOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillProjectsOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_API_KEY on the server)")}, nil
+		return errResult(), GrillProjectsOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)")}, nil
 	}
 
 	c := grillClient(token)

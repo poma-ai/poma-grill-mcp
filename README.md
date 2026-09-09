@@ -21,6 +21,15 @@ The Go binary is the default everywhere the instructions below don't specify oth
 
 Sign up at [console.poma-ai.com](https://console.poma-ai.com) and create a grill project. Copy the API key.
 
+Two kinds of key work, and the server reads them from two environment variables so a key's kind is visible from its name (same convention as the Python SDK):
+
+| Variable | Key kind | Prefix | Scope |
+|----------|----------|--------|-------|
+| `POMA_GRILL_API_KEY` | project key | `poma_proj_gr_…` | one project, fixed server-side. Checked first. Leave `POMA_PROJECT_ID` unset (or equal to that project): the API answers `409 project_id_conflict` if they disagree. |
+| `POMA_API_KEY` | account key, or a login token (no prefix) | `poma_acc_…` | all projects; pick one with `POMA_PROJECT_ID` or the `project_id` argument |
+
+A project key placed under `POMA_API_KEY` still works — that was the only name in earlier releases. This server does not yet look up which project a project key belongs to (the API's `/projects/info` does, the projects list refuses project keys), so if you hold keys for several projects, keep each under a project-specific name in your own env file and put the one you are using into `POMA_GRILL_API_KEY`.
+
 ## 2. Install
 
 - **Go** — see [Install](./go/README.md#2-install) in `go/README.md`
@@ -182,7 +191,7 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 | `url` | string | one-of | Remote URL the **POMA Grill server** fetches and ingests. The MCP itself does not download it. |
 | `filename` | string | no | Original basename (e.g. `report.pdf`). With `file_path`, defaults to the path basename; otherwise inferred from bytes when possible. |
 | `labels` | object | no | Optional `{key: value}` labels attached to the document (sent as the `X-Labels` header). Avoid `:` and `,` in keys/values. |
-| `token` | string | no | API key — omit if `POMA_API_KEY` is set on the server process |
+| `token` | string | no | API key — omit if `POMA_GRILL_API_KEY` or `POMA_API_KEY` is set on the server process |
 
 **`file_path` notes**
 

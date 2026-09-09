@@ -37,7 +37,7 @@ export async function grillSearch(
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_API_KEY on the server)");
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)");
   }
   const query = typeof args.query === "string" ? args.query : "";
   if (query === "") {

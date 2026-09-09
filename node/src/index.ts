@@ -41,7 +41,7 @@ function printUsage(): void {
       "  -input <path|->    Stdio mode; '-' reads from stdin",
       "  -http <addr>       HTTP mode (e.g. :8080)",
       "",
-      "Env: POMA_API_KEY (required unless passed per-call as 'token')",
+      "Env: POMA_GRILL_API_KEY (project key) or POMA_API_KEY (account key) — required unless passed per-call as 'token'",
       "     POMA_API_BASE_URL (override https://api.poma-ai.com)",
       "     POMA_STATUS_API_BASE_URL (override https://api.poma-ai.com/status/v1)",
       "",
