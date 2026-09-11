@@ -56,7 +56,7 @@ Drop the server into your client's MCP config. The `env.POMA_API_KEY` is read by
 ```json
 {
   "mcpServers": {
-    "poma": {
+    "poma-grill": {
       "command": "npx",
       "args": ["-y", "@poma-ai/poma-grill-mcp", "-input", "-"],
       "env": {
@@ -74,7 +74,7 @@ Same shape; restart the app after saving.
 ```json
 {
   "mcpServers": {
-    "poma": {
+    "poma-grill": {
       "command": "npx",
       "args": ["-y", "@poma-ai/poma-grill-mcp", "-input", "-"],
       "env": {
@@ -90,7 +90,7 @@ Same shape; restart the app after saving.
 ```json
 {
   "mcpServers": {
-    "poma": {
+    "poma-grill": {
       "command": "npx",
       "args": ["-y", "@poma-ai/poma-grill-mcp", "-input", "-"],
       "env": {
