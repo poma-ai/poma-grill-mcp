@@ -436,9 +436,29 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       } else if (scenario === "js503") {
         res.statusCode = 503;
         res.end('{"error":"unavailable"}');
+      } else if (scenario === "jsdedup") {
+        // Gateway with poma-services-go#133: dedup hit, existing doc kept.
+        // replaced_doc_ids is sent empty and must be normalized away.
+        res.end('{"is_terminal":true,"status":"done","grill":{"deduplicated":true,"doc_id":"doc-orig","replaced_doc_ids":[]}}');
+      } else if (scenario === "jsreplaced") {
+        // Conversion-build change: this job replaced an older document.
+        res.end('{"is_terminal":true,"status":"done","grill":{"deduplicated":false,"doc_id":"job-1","replaced_doc_ids":["doc-old"]}}');
       } else {
         res.end('{"is_terminal":true,"status":"done"}');
       }
+      return;
+    }
+    // Status SSE stream (grill_ingest_sync / grill_ingest_resume) — the
+    // terminal event carries the grill object for the jsdedup scenario.
+    if (/^\/status\/v1\/jobs\/.+$/.test(u.pathname)) {
+      res.setHeader("content-type", "text/event-stream");
+      res.write('event: job_status\ndata: {"is_terminal":false,"status":"queued"}\n\n');
+      if (scenario === "jsdedup") {
+        res.write('event: job_status\ndata: {"is_terminal":true,"status":"done","grill":{"deduplicated":true,"doc_id":"doc-orig","replaced_doc_ids":[]}}\n\n');
+      } else {
+        res.write('event: job_status\ndata: {"is_terminal":true,"status":"done"}\n\n');
+      }
+      res.end();
       return;
     }
     // Search.
@@ -467,9 +487,11 @@ interface EnvelopeContent {
   retryable?: boolean;
   retry_after_seconds?: number;
   scope?: { project_name?: string; hint?: string; is_default?: boolean };
-  results?: { code?: string; retryable?: boolean; error?: string }[];
+  results?: { code?: string; retryable?: boolean; error?: string; grill?: unknown }[];
   submitted_count?: number;
   job_id?: string;
+  events?: unknown[];
+  grill?: unknown;
 }
 
 async function callTool(client: MCPClient, name: string, args: Record<string, unknown>): Promise<{ isError: boolean; content: EnvelopeContent }> {
@@ -569,6 +591,47 @@ async function errorCodeTests(
     });
     const ok = isError && content.code === "invalid_input";
     record("url + file_path → invalid_input", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 11. jobs_status surfaces the gateway grill object per result, normalized to
+  //     the exact shape the Go implementation emits (see
+  //     go/tools/grill_outcome_test.go): deduplicated always, doc_id when set,
+  //     replaced_doc_ids omitted when empty.
+  const wantGrill = JSON.stringify({ deduplicated: true, doc_id: "doc-orig" });
+  {
+    const { isError, content } = await callTool(stubClient, "grill_jobs_status", { token: "jsdedup", job_ids: ["job-1"] });
+    const r = content.results?.[0];
+    const ok = !isError && JSON.stringify(r?.grill) === wantGrill && content.grill === undefined;
+    record("jobs_status surfaces grill dedup outcome", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 11b. Replacement outcome keeps a non-empty replaced_doc_ids (same shape as
+  //      go/tools/grill_outcome_test.go's job-replaced case).
+  {
+    const { isError, content } = await callTool(stubClient, "grill_jobs_status", { token: "jsreplaced", job_ids: ["job-1"] });
+    const r = content.results?.[0];
+    const ok = !isError && JSON.stringify(r?.grill) === JSON.stringify({ deduplicated: false, doc_id: "job-1", replaced_doc_ids: ["doc-old"] });
+    record("jobs_status surfaces grill replacement outcome", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 12. jobs_status omits grill entirely when the gateway did not send it.
+  {
+    const { content } = await callTool(stubClient, "grill_jobs_status", { token: "js200", job_ids: ["job-1"] });
+    const r = content.results?.[0] as Record<string, unknown> | undefined;
+    const ok = r !== undefined && !("grill" in r);
+    record("jobs_status omits grill when absent", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 13. ingest_sync lifts the terminal event's grill object to the top level.
+  {
+    const { isError, content } = await callTool(stubClient, "grill_ingest_sync", { token: "jsdedup", url: "https://example.com/doc.pdf" });
+    const ok = !isError && content.job_id === "job-url-1" && content.events?.length === 2 && JSON.stringify(content.grill) === wantGrill;
+    record("ingest_sync surfaces grill dedup outcome", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 14. ingest_resume: same lift; and no grill key when the stream had none.
+  {
+    const { isError, content } = await callTool(stubClient, "grill_ingest_resume", { token: "jsdedup", job_id: "job-1" });
+    const ok = !isError && content.job_id === "job-1" && JSON.stringify(content.grill) === wantGrill;
+    record("ingest_resume surfaces grill dedup outcome", ok, ok ? undefined : JSON.stringify(content));
+    const plain = await callTool(stubClient, "grill_ingest_resume", { token: "js200", job_id: "job-1" });
+    const okPlain = !plain.isError && !("grill" in plain.content);
+    record("ingest_resume omits grill when absent", okPlain, okPlain ? undefined : JSON.stringify(plain.content));
   }
 }
 

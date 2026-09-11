@@ -32,7 +32,7 @@ Grill accepts files in any format — PDF, DOCX, TXT, HTML, CSV, Markdown, Json,
 2. A job is created — you receive a \`job_id\`
 3. The file is parsed, chunked, and embedded
 4. Once status reaches "grilled", the document is searchable
-5. The \`job_id\` doubles as \`doc_id\` for search filtering
+5. The \`job_id\` doubles as \`doc_id\` for search filtering — unless the final status carries \`grill.deduplicated=true\` (unchanged file already indexed); then \`grill.doc_id\` is the document to filter on
 
 **Tracking progress:**
 - \`grill_ingest_sync\` streams status events until completion
@@ -44,7 +44,7 @@ Grill accepts files in any format — PDF, DOCX, TXT, HTML, CSV, Markdown, Json,
 Use \`grill_search\` with a natural-language \`query\`. The API performs semantic search across all ingested documents.
 
 **Options:**
-- \`doc_filter\`: restrict search to a single document (pass the \`job_id\` from ingest as \`doc_id\`)
+- \`doc_filter\`: restrict search to a single document (pass the \`job_id\` from ingest as \`doc_id\`, or \`grill.doc_id\` on a dedup hit)
 - \`exclude_doc_ids\`: skip documents already cited (useful in agent loops)
 - \`return_assets\`: return the cited documents' figures/tables in the \`assets\` output field (keyed by doc_id; images are base64 data URIs)
 - \`return_page_images\`: DEPRECATED / not available — no-op today (page screenshots are not returned inline)

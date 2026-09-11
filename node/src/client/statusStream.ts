@@ -5,6 +5,57 @@ export interface JobStatusFull {
   is_terminal: boolean;
   status: string;
   error?: string;
+  grill?: JobGrillOutcome;
+}
+
+// JobGrillOutcome is the optional `grill` object the gateway attaches to a job
+// status (poma-services-go#133). Absent on older gateways, on non-grill jobs,
+// or before the job reaches the grill stage.
+//
+// deduplicated: the same input bytes under the same conversion build were
+// already indexed; nothing new was stored and doc_id names the existing
+// document (it may differ from the job_id). replaced_doc_ids: documents grill
+// evicted in favour of this job after a conversion-build change.
+export interface JobGrillOutcome {
+  deduplicated: boolean;
+  doc_id?: string;
+  replaced_doc_ids?: string[];
+}
+
+// grillOutcomeFields normalizes a gateway grill object to the exact wire shape
+// the Go implementation emits (deduplicated always present, doc_id when set,
+// replaced_doc_ids only when non-empty), or undefined when the gateway sent
+// none. Mirrors Go's jobGrillOutcome JSON tags.
+export function grillOutcomeFields(g: unknown): JobGrillOutcome | undefined {
+  if (g === null || typeof g !== "object") return undefined;
+  const raw = g as Record<string, unknown>;
+  const out: JobGrillOutcome = { deduplicated: raw.deduplicated === true };
+  if (typeof raw.doc_id === "string" && raw.doc_id !== "") out.doc_id = raw.doc_id;
+  if (Array.isArray(raw.replaced_doc_ids) && raw.replaced_doc_ids.length > 0) {
+    out.replaced_doc_ids = raw.replaced_doc_ids.map(String);
+  }
+  return out;
+}
+
+// normalizeGrill rewrites a parsed status event's grill object in place to the
+// normalized wire shape, or drops the key when the gateway sent nothing usable,
+// so the `events` array matches the Go implementation's serialization.
+function normalizeGrill(s: JobStatusFull): void {
+  if (!("grill" in s)) return;
+  const g = grillOutcomeFields(s.grill);
+  if (g) s.grill = g;
+  else delete s.grill;
+}
+
+// lastGrillOutcome returns the normalized grill object of the most recent
+// status event that carried one, or undefined. The gateway attaches it to the
+// terminal status, so this is the outcome a wait-style tool surfaces top-level.
+export function lastGrillOutcome(events: JobStatusFull[]): JobGrillOutcome | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const g = grillOutcomeFields(events[i]?.grill);
+    if (g) return g;
+  }
+  return undefined;
 }
 
 // Mirrors Go's isTerminalGrillStatus. The status API doesn't always set
@@ -67,6 +118,7 @@ export async function streamJobStatus(
       data = "";
       return false;
     }
+    normalizeGrill(parsed);
     onEvent(parsed);
     eventType = "";
     data = "";
@@ -142,7 +194,9 @@ export async function peekJobStatus(client: GrillClient, jobID: string): Promise
     return { status: null, httpStatus: res.status, error: `job status: HTTP ${res.status}: ${text}` };
   }
   try {
-    return { status: JSON.parse(text) as JobStatusFull, httpStatus: res.status };
+    const status = JSON.parse(text) as JobStatusFull;
+    normalizeGrill(status);
+    return { status, httpStatus: res.status };
   } catch (err) {
     return { status: null, httpStatus: res.status, error: err instanceof Error ? err.message : String(err) };
   }

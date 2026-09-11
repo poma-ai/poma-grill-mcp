@@ -48,7 +48,7 @@ The server has two modes, selected at startup:
 2. POSTs to POMA Grill API (`https://api.poma-ai.com/v3/grill/`)
 3. Reads SSE status stream (`https://api.poma-ai.com/status/v1`) until terminal state
 4. Sends each status event as an MCP progress notification
-5. Returns `job_id` and status events; `job_id` doubles as `doc_id` for search
+5. Returns `job_id` and status events; `job_id` doubles as `doc_id` for search (unless the status carries `grill.deduplicated=true` — then `grill.doc_id` is the searchable document, see README "Dedup and re-ingest")
 
 **Flow for `grill_search`** (`go/tools/grill.go`):
 1. Accepts a natural-language query and optional `doc_filter` (= `job_id` from ingest)
