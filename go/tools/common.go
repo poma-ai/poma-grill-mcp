@@ -161,10 +161,31 @@ func projectIDSource(inputProjectID string) (id, source string) {
 	return "", "account default (no project_id set)"
 }
 
+// envToken returns the API token from the environment and the name of the
+// variable it came from. Two names are accepted, mirroring the poma-sdk
+// convention:
+//
+//   - POMA_GRILL_API_KEY — a grill *project* key (prefix poma_proj_gr_). Bound
+//     to one project server-side; checked first because it is the more
+//     specific credential.
+//   - POMA_API_KEY — an *account* key (prefix poma_acc_) or a login JWT.
+//     Scope it to a project with POMA_PROJECT_ID or the project_id argument.
+//
+// Existing configs that put a project key under POMA_API_KEY keep working.
+// An empty value counts as unset and falls through to the next name.
+func envToken() (token, name string) {
+	for _, n := range []string{"POMA_GRILL_API_KEY", "POMA_API_KEY"} {
+		if v := os.Getenv(n); v != "" {
+			return v, n
+		}
+	}
+	return "", ""
+}
+
 // getToken resolves the API token with this priority:
 //  1. Explicit tool argument
 //  2. Per-request token injected by HTTP middleware (x-api-key header)
-//  3. POMA_API_KEY environment variable
+//  3. POMA_GRILL_API_KEY, then POMA_API_KEY environment variable (see envToken)
 func getToken(ctx context.Context, inputToken string) string {
 	if inputToken != "" {
 		return inputToken
@@ -172,7 +193,8 @@ func getToken(ctx context.Context, inputToken string) string {
 	if v, ok := ctx.Value(contextKeyAPIToken{}).(string); ok && v != "" {
 		return v
 	}
-	return os.Getenv("POMA_API_KEY")
+	t, _ := envToken()
+	return t
 }
 
 // tokenSource describes which credential was used, for error messages.
@@ -183,8 +205,8 @@ func tokenSource(ctx context.Context, inputToken string) string {
 	if v, ok := ctx.Value(contextKeyAPIToken{}).(string); ok && v != "" {
 		return "x-api-key / Authorization header"
 	}
-	if os.Getenv("POMA_API_KEY") != "" {
-		return "POMA_API_KEY env var"
+	if _, name := envToken(); name != "" {
+		return name + " env var"
 	}
 	return "unknown"
 }
@@ -211,7 +233,7 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 	if statusCode == http.StatusUnauthorized {
 		return fmt.Sprintf(
 			"%s: authentication failed (HTTP 401). The token provided via %s is invalid, expired, or malformed. "+
-				"Generate a valid API key at https://console.poma-ai.com and set it as POMA_API_KEY or pass it as the token argument.",
+				"Generate a valid API key at https://console.poma-ai.com and set it as POMA_GRILL_API_KEY (project key) or POMA_API_KEY (account key), or pass it as the token argument.",
 			operation, src,
 		), CodeAuthExpired
 	}

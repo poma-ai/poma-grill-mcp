@@ -24,9 +24,30 @@ const DEFAULT_STATUS_PREFIX = "/status/v1";
 
 const VERSION_SUFFIX_RE = /\/v[0-9]+$/;
 
+/**
+ * API token from the environment, plus the variable it came from. Two names
+ * are accepted, mirroring the poma-sdk convention:
+ *
+ * - `POMA_GRILL_API_KEY` — a grill *project* key (prefix `poma_proj_gr_`).
+ *   Bound to one project server-side; checked first because it is the more
+ *   specific credential.
+ * - `POMA_API_KEY` — an *account* key (prefix `poma_acc_`) or a login JWT.
+ *   Scope it to a project with `POMA_PROJECT_ID` or the `project_id` argument.
+ *
+ * Existing configs that put a project key under `POMA_API_KEY` keep working.
+ * An empty value counts as unset and falls through to the next name.
+ */
+export function envToken(): { token: string; name: string } {
+  for (const name of ["POMA_GRILL_API_KEY", "POMA_API_KEY"]) {
+    const token = process.env[name];
+    if (token) return { token, name };
+  }
+  return { token: "", name: "" };
+}
+
 export function getToken(arg: unknown): string {
   if (typeof arg === "string" && arg !== "") return arg;
-  return process.env.POMA_API_KEY ?? "";
+  return envToken().token;
 }
 
 export function getProjectID(arg: unknown): string {
@@ -183,7 +204,8 @@ export function codedError(
 /** Describes which credential was used, for error messages. */
 export function tokenSource(tokenArg: unknown): string {
   if (typeof tokenArg === "string" && tokenArg !== "") return "per-call token argument";
-  if (process.env.POMA_API_KEY) return "POMA_API_KEY env var";
+  const { name } = envToken();
+  if (name) return `${name} env var`;
   return "unknown";
 }
 
@@ -216,7 +238,7 @@ export function interpretAuthError(
     return {
       message:
         `${operation}: authentication failed (HTTP 401). The token provided via ${src} is invalid, expired, or malformed. ` +
-        `Generate a valid API key at https://console.poma-ai.com and set it as POMA_API_KEY or pass it as the token argument.`,
+        `Generate a valid API key at https://console.poma-ai.com and set it as POMA_GRILL_API_KEY (project key) or POMA_API_KEY (account key), or pass it as the token argument.`,
       code: ErrorCode.AuthExpired,
     };
   }

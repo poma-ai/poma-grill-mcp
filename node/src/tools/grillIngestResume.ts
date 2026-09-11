@@ -9,7 +9,7 @@ export async function grillIngestResume(
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_API_KEY on the server)");
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)");
   }
   const jobID = typeof args.job_id === "string" ? args.job_id : "";
   if (jobID === "") {
