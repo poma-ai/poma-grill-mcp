@@ -10,7 +10,7 @@ This repo ships two implementations of the same MCP tool surface. Pick whichever
 
 | | Source | README | Distribution | Status |
 |---|---|---|---|---|
-| **Go** | [`go/`](./go) | [`go/README.md`](./go/README.md) | Homebrew tap, `go install`, GitHub Releases, Docker image | Stable, production |
+| **Go** | [`go/`](./go) | [`go/README.md`](./go/README.md) | `go install`, from source, Docker image (`ghcr.io/poma-ai/poma-grill-mcp`); Homebrew tap and GitHub Releases follow the first Go release | Stable, production |
 | **Node/TypeScript** | [`node/`](./node) | [`node/README.md`](./node/README.md) | Build from source today; npm publish planned (`@poma-ai/poma-grill-mcp`) | Implemented; see [`NODE_PLAN.md`](./NODE_PLAN.md) |
 
 See the README in each folder for implementation-specific details (build, test, architecture).
@@ -179,6 +179,9 @@ Ingest ~/docs/spec.pdf into POMA Grill, then search it for authentication requir
 | `grill_ingest_batch` | Upload up to 50 files with controlled concurrency (default 5, max 10). Returns `job_ids` immediately after uploads complete; use `grill_jobs_status` to monitor. |
 | `grill_jobs_status` | Get current status snapshots for up to 50 jobs in one call. No streaming. |
 | `grill_search` | Hybrid search returning concatenated context text for RAG. Set `doc_filter` (= `job_id`) to restrict to one document. |
+| `grill_docs_list` | List the documents in the authenticated project namespace (metadata only: `doc_id`, filename, chunk/page counts, …) with a `scope` object naming the project. A `doc_id` is the `doc_filter` for `grill_search`. |
+| `grill_projects` | List the projects the key can reach (name → `project_id`). With a project API key, returns just the project the key is bound to. |
+| `grill_explain` | Static explanation of how Grill works (ingest, search, result format, keys). No arguments, no authentication. |
 
 ### `grill_ingest` / `grill_ingest_sync` arguments
 
