@@ -218,6 +218,9 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 	if throttle, retryAfter, ok := interpretTooManyJobs(st, body); ok {
 		return errResult(), GrillIngestOutput{GrillError: GrillError{Error: throttle, Code: CodeTooManyJobs, Retryable: isRetryableCode(CodeTooManyJobs, 0), RetryAfterSeconds: retryAfter}}, nil
 	}
+	if conflict, ok := interpretProjectConflict(st, body, "grill ingest"); ok {
+		return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "%s", conflict)}, nil
+	}
 	if st != http.StatusCreated {
 		return errResult(), GrillIngestOutput{GrillError: GrillError{Error: fmt.Sprintf("grill ingest: HTTP %d: %s", st, string(body)), Code: CodeUpstreamError, Retryable: isRetryableCode(CodeUpstreamError, st)}}, nil
 	}
@@ -228,7 +231,7 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 	}
 	slog.Info("grill ingest job_id", "job_id", j.JobID)
 
-	_, source := projectIDSource(input.ProjectID)
+	_, source := projectIDSource(token, input.ProjectID)
 	scope := resolveScope(c, token, projectID, "", source)
 
 	if !waitTerminal {
@@ -457,6 +460,9 @@ func GrillSearch(ctx context.Context, _ *mcp.CallToolRequest, input GrillSearchI
 	if authErr, authCode := interpretAuthError(ctx, input.Token, st, respBody, "grill search"); authErr != "" {
 		return errResult(), GrillSearchOutput{GrillError: errOut(authCode, "%s", authErr)}, nil
 	}
+	if conflict, ok := interpretProjectConflict(st, respBody, "grill search"); ok {
+		return errResult(), GrillSearchOutput{GrillError: errOut(CodeInvalidInput, "%s", conflict)}, nil
+	}
 	if st != http.StatusOK {
 		return errResult(), GrillSearchOutput{GrillError: GrillError{Error: fmt.Sprintf("grill search: HTTP %d: %s", st, string(respBody)), Code: CodeUpstreamError, Retryable: isRetryableCode(CodeUpstreamError, st)}}, nil
 	}
@@ -468,7 +474,7 @@ func GrillSearch(ctx context.Context, _ *mcp.CallToolRequest, input GrillSearchI
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return errResult(), GrillSearchOutput{GrillError: errOut(CodeParseError, "grill search: parse response: %v", err)}, nil
 	}
-	_, source := projectIDSource(input.ProjectID)
+	_, source := projectIDSource(token, input.ProjectID)
 	scope := resolveScope(c, token, projectID, "", source)
 	slog.Info("grill search", "doc_filter", input.DocFilter, "context_bytes", len(result.Context), "assets_docs", len(result.Assets), "project", scope.ProjectName)
 	// Set Content explicitly to just the prompt-ready context text so the
@@ -507,7 +513,7 @@ var scopeSchema = &jsonschema.Schema{
 		"project_id":   {Type: "string"},
 		"namespace":    {Type: "string"},
 		"is_default":   {Type: "boolean", Description: "True when this is the account's default workspace (no specific project selected)."},
-		"source":       {Type: "string", Description: "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default)."},
+		"source":       {Type: "string", Description: "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default)."},
 		"hint":         {Type: "string", Description: "Ready-to-relay sentence naming the project for the user."},
 	},
 }
@@ -591,13 +597,34 @@ func fetchProjectsCached(c *client.Client, token string) []grillProject {
 	if projects, ok := projectsCacheGet(token); ok {
 		return projects
 	}
-	body, st, err := grillListProjects(c, "grill")
+	var (
+		body []byte
+		st   int
+		err  error
+	)
+	if isProjectKey(token) {
+		// /projects refuses project keys (403). /projects/info returns the one
+		// project the key is bound to; wrap it as a single-entry listing so the
+		// scope mapping below can name it.
+		body, st, err = grillProjectInfo(c)
+	} else {
+		body, st, err = grillListProjects(c, "grill")
+	}
 	if err != nil || st != http.StatusOK {
 		return nil
 	}
-	projects, err := parseProjects(body)
-	if err != nil {
-		return nil
+	var projects []grillProject
+	if isProjectKey(token) {
+		var p grillProject
+		if err := json.Unmarshal(body, &p); err != nil || (p.ProjectID == "" && p.ID == "") {
+			return nil
+		}
+		projects = []grillProject{p}
+	} else {
+		projects, err = parseProjects(body)
+		if err != nil {
+			return nil
+		}
 	}
 	projectsCachePut(token, projects)
 	return projects
@@ -646,6 +673,13 @@ func scopeFromProjects(projects []grillProject, resolvedProjectID, namespace, so
 		p = find(func(x grillProject) bool {
 			return x.ProjectID == resolvedProjectID || x.ID == resolvedProjectID
 		})
+	case source == sourceProjectKey:
+		// A project API key binds exactly one project; the listing (from
+		// /projects/info) has that single entry. Never fall through to the
+		// account-default lookup — the key is the selection.
+		if len(projects) == 1 {
+			p = &projects[0]
+		}
 	default:
 		// Account default: the key owner's default grill workspace (own account,
 		// not an org's) — identified by is_default with no orga.
@@ -668,12 +702,21 @@ func scopeFromProjects(projects []grillProject, resolvedProjectID, namespace, so
 	}
 
 	switch {
+	case source == sourceProjectKey && scope.ProjectName != "":
+		scope.Hint = fmt.Sprintf("Scoped to project %q — the project bound to your project API key.", scope.ProjectName)
+	case source == sourceProjectKey:
+		scope.Hint = "Scoped to the project bound to your project API key (name unavailable — /projects/info did not answer)."
 	case scope.ProjectName != "" && scope.IsDefault:
 		scope.Hint = fmt.Sprintf("This belongs to your default grill workspace %q — no specific project is selected. Pass project_id or set POMA_PROJECT_ID to target another project.", scope.ProjectName)
 	case scope.ProjectName != "":
 		scope.Hint = fmt.Sprintf("Scoped to project %q.", scope.ProjectName)
 	case resolvedProjectID != "":
 		scope.Hint = fmt.Sprintf("Scoped to project_id %s (name unavailable).", resolvedProjectID)
+	case strings.HasPrefix(namespace, "proj_"):
+		// The server reported a named-project namespace but no listing matched
+		// it (e.g. the projects call failed). Never claim "default workspace"
+		// for data that is demonstrably in a named project.
+		scope.Hint = fmt.Sprintf("Scoped to project namespace %s (name unavailable).", namespace)
 	default:
 		scope.Hint = "This belongs to your default grill workspace — no specific project is selected."
 	}
@@ -793,10 +836,18 @@ func grillDocsListNote(shown, total int, truncated, degraded bool, pagingErr str
 	return strings.Join(notes, " ")
 }
 
+// docsListError builds the error output for grill_docs_list. `documents` is
+// declared as an array in the output schema; a nil slice would serialise as
+// null and fail the SDK's output validation, turning a clean structured error
+// into an opaque "output does not conform to schema" failure for the client.
+func docsListError(ge GrillError) GrillDocsListOutput {
+	return GrillDocsListOutput{Documents: []GrillDocInfo{}, GrillError: ge}
+}
+
 func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsListInput) (*mcp.CallToolResult, GrillDocsListOutput, error) {
 	token := getToken(ctx, input.Token)
 	if token == "" {
-		return errResult(), GrillDocsListOutput{GrillError: errOut(CodeMissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)")}, nil
+		return errResult(), docsListError(errOut(CodeMissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)")), nil
 	}
 
 	projectID := getProjectID(input.ProjectID)
@@ -814,6 +865,10 @@ func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsL
 		}
 		if authErr, authCode := interpretAuthError(ctx, input.Token, st, body, "grill docs list"); authErr != "" {
 			ge := errOut(authCode, "%s", authErr)
+			return p, &ge, true
+		}
+		if conflict, ok := interpretProjectConflict(st, body, "grill docs list"); ok {
+			ge := errOut(CodeInvalidInput, "%s", conflict)
 			return p, &ge, true
 		}
 		if st != http.StatusOK {
@@ -844,7 +899,7 @@ func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsL
 			// way. Surface the actionable structured error as a hard error on any
 			// page, rather than burying it in a note.
 			if page == 0 || isAuthErr {
-				return errResult(), GrillDocsListOutput{GrillError: *ferr}, nil
+				return errResult(), docsListError(*ferr), nil
 			}
 			// Keep the pages already fetched; surface the gap in the note.
 			truncated = true
@@ -877,7 +932,7 @@ func GrillDocsList(ctx context.Context, _ *mcp.CallToolRequest, input GrillDocsL
 		TotalDocuments: total,
 		Note:           grillDocsListNote(len(docs), total, truncated, degraded, pagingErr),
 	}
-	_, source := projectIDSource(input.ProjectID)
+	_, source := projectIDSource(token, input.ProjectID)
 	out.Scope = resolveScope(c, token, projectID, out.Namespace, source)
 	slog.Info("grill docs list", "count", out.TotalDocuments, "returned", len(out.Documents), "namespace", out.Namespace, "project", out.Scope.ProjectName)
 	return nil, out, nil
@@ -1014,6 +1069,10 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: GrillError{Error: throttle, Code: CodeTooManyJobs, Retryable: isRetryableCode(CodeTooManyJobs, 0), RetryAfterSeconds: retryAfter}, QuotaExceed: true}
 				return
 			}
+			if conflict, ok := interpretProjectConflict(st, body, "grill ingest"); ok {
+				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: errOut(CodeInvalidInput, "%s", conflict)}
+				return
+			}
 			if st == http.StatusForbidden {
 				// interpretAuthError returned "" — legacy quota/capacity 403 (older API), not auth.
 				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: GrillError{Error: fmt.Sprintf("quota exceeded: %s", string(body)), Code: CodeTooManyJobs, Retryable: isRetryableCode(CodeTooManyJobs, 0)}, QuotaExceed: true}
@@ -1071,7 +1130,7 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 		out.RetryAfterSeconds = results[0].RetryAfterSeconds
 		return errResult(), out, nil
 	}
-	_, source := projectIDSource(input.ProjectID)
+	_, source := projectIDSource(token, input.ProjectID)
 	out.Scope = resolveScope(c, token, projectID, "", source)
 	return nil, out, nil
 }
@@ -1250,7 +1309,7 @@ var grillProjectsTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(true),
 	},
-	Description:  "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools." + errorHandlingGuidance,
+	Description:  "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools. With a project API key (poma_proj_…) the gateway refuses the account listing; the tool then returns just the one project the key is bound to." + errorHandlingGuidance,
 	InputSchema:  grillProjectsInputSchema,
 	OutputSchema: grillProjectsOutputSchema,
 }
@@ -1300,7 +1359,21 @@ func GrillProjects(ctx context.Context, _ *mcp.CallToolRequest, input GrillProje
 	}
 
 	c := grillClient(token)
-	body, st, err := grillListProjects(c, input.Product)
+	// A project API key cannot list the account's projects (the gateway answers
+	// 403 "project API keys are not accepted on this endpoint"). It can ask
+	// /projects/info for the one project it is bound to — answer with that
+	// instead of a dead-end forbidden error.
+	projectKey := isProjectKey(token)
+	var (
+		body []byte
+		st   int
+		err  error
+	)
+	if projectKey {
+		body, st, err = grillProjectInfo(c)
+	} else {
+		body, st, err = grillListProjects(c, input.Product)
+	}
 	if err != nil {
 		// Network/client error reaching the Grill API — transient, retryable.
 		return errResult(), GrillProjectsOutput{GrillError: GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)}}, nil
@@ -1312,9 +1385,22 @@ func GrillProjects(ctx context.Context, _ *mcp.CallToolRequest, input GrillProje
 		return errResult(), GrillProjectsOutput{GrillError: GrillError{Error: fmt.Sprintf("grill projects: HTTP %d: %s", st, string(body)), Code: CodeUpstreamError, Retryable: isRetryableCode(CodeUpstreamError, st)}}, nil
 	}
 
-	projects, err := parseProjects(body)
-	if err != nil {
-		return errResult(), GrillProjectsOutput{GrillError: errOut(CodeParseError, "grill projects: parse response: %v", err)}, nil
+	var projects []grillProject
+	if projectKey {
+		var p grillProject
+		if err := json.Unmarshal(body, &p); err != nil || (p.ProjectID == "" && p.ID == "") {
+			return errResult(), GrillProjectsOutput{GrillError: errOut(CodeParseError, "grill projects: parse /projects/info response: %s", string(body))}, nil
+		}
+		// The key binds one project; honour a product filter the same way the
+		// listing endpoint would.
+		if input.Product == "" || p.Product == input.Product {
+			projects = []grillProject{p}
+		}
+	} else {
+		projects, err = parseProjects(body)
+		if err != nil {
+			return errResult(), GrillProjectsOutput{GrillError: errOut(CodeParseError, "grill projects: parse response: %v", err)}, nil
+		}
 	}
 
 	if len(projects) == 0 {
@@ -1322,7 +1408,11 @@ func GrillProjects(ctx context.Context, _ *mcp.CallToolRequest, input GrillProje
 	}
 
 	var sb strings.Builder
-	sb.WriteString("Projects:\n")
+	if projectKey {
+		sb.WriteString("Project bound to this project API key (project keys cannot list an account's other projects; use an account API key or login token for the full list):\n")
+	} else {
+		sb.WriteString("Projects:\n")
+	}
 	for _, p := range projects {
 		line := fmt.Sprintf("- %s (project_id: %s, product: %s, protected: %v, default: %v", p.Name, p.ID, p.Product, p.Protected, p.IsDefault)
 		if p.OrgaID != "" {

@@ -97,6 +97,18 @@ export class GrillClient {
     const buf = new Uint8Array(await res.arrayBuffer());
     return { body: buf, status: res.status };
   }
+
+  // projectInfo calls GET /projects/info: the single project a project API key
+  // is bound to (same shape as one /projects entry). 401 for other credentials.
+  async projectInfo(): Promise<GrillResponse> {
+    const url = joinURL(apiBaseURL(), "/projects/info");
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${this.token}` },
+    });
+    const buf = new Uint8Array(await res.arrayBuffer());
+    return { body: buf, status: res.status };
+  }
 }
 
 // Mirrors Go's grillSanitizeFilename: blank/dot/dotdot or filenames containing

@@ -415,15 +415,35 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
     res.setHeader("content-type", "application/json");
     const scenario = (req.headers.authorization ?? "").replace("Bearer ", "");
 
-    // Projects listing — used by scope resolution and grill_projects.
+    // Projects listing — used by scope resolution and grill_projects. The
+    // gateway refuses project keys here (403) and answers /projects/info instead.
     if (u.pathname === "/v3/projects") {
+      if (scenario.startsWith("poma_proj_")) {
+        res.statusCode = 403;
+        res.end('{"code":403,"reason":"forbidden","error":"project API keys are not accepted on this endpoint"}');
+        return;
+      }
       res.end(JSON.stringify([defaultProject]));
+      return;
+    }
+    if (u.pathname === "/v3/projects/info") {
+      if (!scenario.startsWith("poma_proj_")) {
+        res.statusCode = 401;
+        res.end('{"error":"A project API key is required"}');
+        return;
+      }
+      res.end(JSON.stringify({ ...defaultProject, id: "242d", project_id: "242d", name: "immoscout", is_default: false }));
       return;
     }
     // Ingest — capture X-Remote-URL / X-Labels and return a job_id.
     if (u.pathname === "/v3/grill/ingest") {
       ingest.remoteURL = (req.headers["x-remote-url"] as string | undefined) ?? undefined;
       ingest.labels = (req.headers["x-labels"] as string | undefined) ?? undefined;
+      if (scenario === "poma_proj_conflict") {
+        res.statusCode = 409;
+        res.end('{"code":409,"reason":"project_id_conflict","error":"X-Project-ID does not match the project this API key is bound to"}');
+        return;
+      }
       res.statusCode = 201;
       res.end('{"job_id":"job-url-1"}');
       return;
@@ -466,7 +486,9 @@ interface EnvelopeContent {
   code?: string;
   retryable?: boolean;
   retry_after_seconds?: number;
-  scope?: { project_name?: string; hint?: string; is_default?: boolean };
+  scope?: { project_name?: string; hint?: string; is_default?: boolean; source?: string };
+  projects?: string;
+  documents?: unknown[];
   results?: { code?: string; retryable?: boolean; error?: string }[];
   submitted_count?: number;
   job_id?: string;
@@ -569,6 +591,39 @@ async function errorCodeTests(
     });
     const ok = isError && content.code === "invalid_input";
     record("url + file_path → invalid_input", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 10. Project key: grill_projects answers from /projects/info, not the 403 listing.
+  {
+    const { isError, content } = await callTool(stubClient, "grill_projects", { token: "poma_proj_gr_smoke" });
+    const ok = !isError && (content.projects ?? "").includes("immoscout") && (content.projects ?? "").includes("project API key");
+    record("project key → grill_projects returns the bound project", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 11. Project key: scope names the bound project and says the key selected it.
+  {
+    const { isError, content } = await callTool(stubClient, "grill_search", { token: "poma_proj_gr_smoke", query: "hi" });
+    const ok =
+      !isError &&
+      content.scope?.source === "project API key" &&
+      content.scope?.project_name === "immoscout" &&
+      (content.scope?.hint ?? "").includes("project API key") &&
+      !(content.scope?.hint ?? "").includes("default grill workspace");
+    record("project key → scope source/hint name the bound project", ok, ok ? undefined : JSON.stringify(content.scope));
+  }
+  // 12. 409 project_id_conflict → terminal invalid_input, not upstream_error.
+  {
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "poma_proj_conflict",
+      project_id: "other",
+      url: "https://example.com/doc.pdf",
+    });
+    const ok = isError && content.code === "invalid_input" && content.retryable !== true && (content.error ?? "").includes("HTTP 409");
+    record("409 project_id_conflict → invalid_input", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 13. docs_list error output carries documents: [] (output schema declares an array).
+  {
+    const { isError, content } = await callTool(noTokenClient, "grill_docs_list", {});
+    const ok = isError && content.code === "missing_token" && Array.isArray(content.documents) && content.documents.length === 0;
+    record("docs_list error output has documents: []", ok, ok ? undefined : JSON.stringify(content));
   }
 }
 

@@ -28,7 +28,7 @@ Two kinds of key work, and the server reads them from two environment variables 
 | `POMA_GRILL_API_KEY` | project key | `poma_proj_gr_…` | one project, fixed server-side. Checked first. Leave `POMA_PROJECT_ID` unset (or equal to that project): the API answers `409 project_id_conflict` if they disagree. |
 | `POMA_API_KEY` | account key, or a login token (no prefix) | `poma_acc_…` | all projects; pick one with `POMA_PROJECT_ID` or the `project_id` argument |
 
-A project key placed under `POMA_API_KEY` still works — that was the only name in earlier releases. This server does not yet look up which project a project key belongs to (the API's `/projects/info` does, the projects list refuses project keys), so if you hold keys for several projects, keep each under a project-specific name in your own env file and put the one you are using into `POMA_GRILL_API_KEY`.
+A project key placed under `POMA_API_KEY` still works — that was the only name in earlier releases. With a project key the server resolves the bound project through the API's `/projects/info` (the projects list refuses project keys), so `scope.source` reads `project API key` and `scope.hint` names that project; `grill_projects` returns that one project instead of a 403. If you hold keys for several projects, keep each under a project-specific name in your own env file and put the one you are using into `POMA_GRILL_API_KEY`. A `project_id` argument or `POMA_PROJECT_ID` that names a different project than the key is answered by the API with `409 project_id_conflict`; the tools report it as terminal `invalid_input`.
 
 ## 2. Install
 

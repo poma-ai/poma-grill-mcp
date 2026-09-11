@@ -6,6 +6,7 @@ import {
   getToken,
   type GrillError,
   interpretAuthError,
+  interpretProjectConflict,
   makeGrillError,
   projectIDSource,
   successResult,
@@ -85,7 +86,10 @@ export async function grillDocsList(
 ): Promise<CallToolResult> {
   const token = getToken(args.token);
   if (token === "") {
-    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)");
+    // documents: [] mirrors Go's docsListError — the output schema declares an array.
+    return codedError(ErrorCode.MissingToken, "token is required (provide token or set POMA_GRILL_API_KEY or POMA_API_KEY on the server)", {
+      extra: { documents: [] },
+    });
   }
 
   const projectID = getProjectID(args.project_id);
@@ -107,6 +111,8 @@ export async function grillDocsList(
 
     const authErr = interpretAuthError(args.token, res.status, res.body, "grill docs list");
     if (authErr) return { err: makeGrillError(authErr.code, authErr.message), auth: true };
+    const conflict = interpretProjectConflict(res.status, res.body, "grill docs list");
+    if (conflict) return { err: makeGrillError(ErrorCode.InvalidInput, conflict.message), auth: true };
     const text = new TextDecoder("utf-8").decode(res.body);
     if (res.status !== 200) {
       return {
@@ -140,7 +146,7 @@ export async function grillDocsList(
       // expired, or forbidden and every further page would fail the same way.
       // Surface the actionable structured error as a hard error on any page,
       // rather than burying it in a note.
-      if (page === 0 || result.auth) return toolError(result.err);
+      if (page === 0 || result.auth) return toolError(result.err, { documents: [] });
       // Keep the pages already fetched; surface the gap in the note.
       truncated = true;
       pagingErr = result.err.error;
@@ -159,7 +165,7 @@ export async function grillDocsList(
   if (total === 0) total = documents.length; // pre-pagination API always sends total_documents == len(documents)
 
   const note = grillDocsListNote(documents.length, total, truncated, degraded, pagingErr);
-  const { source } = projectIDSource(args.project_id);
+  const { source } = projectIDSource(token, args.project_id);
   const scope = await resolveScope(client, token, projectID, namespace, source);
   const scopeOut = scopeFields(scope);
   return successResult({
