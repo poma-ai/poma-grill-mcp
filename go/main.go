@@ -126,6 +126,9 @@ func runHttpMcpServer(server *mcp.Server) {
 	if *inputPath != "" {
 		slog.Warn("ignoring -input in HTTP mode")
 	}
+	// file_path would read this process's filesystem; refuse it on the hosted
+	// server unless GRILL_INGEST_ALLOWED_PREFIX opts a directory in.
+	tools.SetHTTPMode(true)
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })

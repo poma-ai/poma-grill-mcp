@@ -108,6 +108,8 @@ Auth is **OAuth 2.0**: the first time your client connects, it gets a `401` with
 
 > Prefer an API key instead of OAuth? Add `"headers": { "x-api-key": "your-api-key" }` to the config above. The hosted endpoint accepts both.
 
+> On the hosted endpoint, `file_path` / `file_paths` are refused (`invalid_input`): a path would be read from the server's filesystem, not from your machine. Ingest by `url` or `file_base64` there, or run the binary locally (Option A) for folder ingest. Self-hosters can opt a directory in with `GRILL_INGEST_ALLOWED_PREFIX` — point it at a dedicated upload directory, never at `/` or the working directory, because every path under it becomes readable to every caller.
+
 That's it. You can now ask the agent to ingest a document and search it:
 
 > "Ingest `/path/to/report.pdf` with POMA Grill using **file_path** (not base64), then search for 'coverage limits'"

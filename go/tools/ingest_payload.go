@@ -52,10 +52,25 @@ func pathUnderAllowedPrefix(path, prefix string) (bool, error) {
 	return strings.HasPrefix(rp, rdWithSep), nil
 }
 
+// httpMode is set by main when the server runs as a (hosted) HTTP endpoint.
+// In that mode file_path points at the SERVER's filesystem, not the user's
+// laptop, so path-based ingest is refused unless the operator has deliberately
+// exposed a directory via GRILL_INGEST_ALLOWED_PREFIX.
+var httpMode bool
+
+// SetHTTPMode records whether the server is serving MCP over HTTP.
+func SetHTTPMode(on bool) { httpMode = on }
+
+// ErrFilePathHosted is the invalid_input reason for file_path on the hosted server.
+const ErrFilePathHosted = "file_path is not available on the hosted HTTP server: the path would be read from the server's own filesystem, not from your machine. Pass url or file_base64, use the /ingest-upload endpoint, or run the local stdio server. (Operators can opt in by setting GRILL_INGEST_ALLOWED_PREFIX.)"
+
 func readFileForIngest(path string) ([]byte, error) {
 	clean := filepath.Clean(strings.TrimSpace(path))
 	if clean == "" || clean == "." {
 		return nil, errors.New("file_path is empty")
+	}
+	if httpMode && strings.TrimSpace(os.Getenv("GRILL_INGEST_ALLOWED_PREFIX")) == "" {
+		return nil, errors.New(ErrFilePathHosted)
 	}
 	if !filepath.IsAbs(clean) {
 		wd, err := os.Getwd()

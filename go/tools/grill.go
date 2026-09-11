@@ -60,7 +60,7 @@ var grillIngestInputSchema = &jsonschema.Schema{
 		},
 		"file_path": {
 			Type:        "string",
-			Description: "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES.",
+			Description: "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Not available on the hosted HTTP server (it would read the server's filesystem) unless the operator sets GRILL_INGEST_ALLOWED_PREFIX — use url or file_base64 there. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES.",
 		},
 		"url": {
 			Type:        "string",
@@ -890,7 +890,7 @@ var grillIngestBatchInputSchema = &jsonschema.Schema{
 	Properties: map[string]*jsonschema.Schema{
 		"file_paths": {
 			Type:        "array",
-			Description: "Absolute or cwd-relative paths readable by the MCP server process. Max 50 files.",
+			Description: "Absolute or cwd-relative paths readable by the MCP server process (local stdio). Max 50 files. Not available on the hosted HTTP server unless the operator sets GRILL_INGEST_ALLOWED_PREFIX.",
 			Items:       &jsonschema.Schema{Type: "string"},
 		},
 		"token": {

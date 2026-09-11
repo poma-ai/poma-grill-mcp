@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -119,5 +122,40 @@ func TestHandleIngestUploadUpstream5xxIsRetryable(t *testing.T) {
 	}
 	if !got.Retryable {
 		t.Fatal("5xx upstream_error must be retryable")
+	}
+}
+
+// On the hosted (HTTP) server file_path would read the pod's filesystem
+// (found 2026-09-09: mcp.poma-ai.com advertises the path-based ingest tools
+// and runs with no GRILL_INGEST_ALLOWED_PREFIX). Refuse it there unless the
+// operator opts a directory in; stdio mode is unchanged.
+func TestReadFileForIngestRefusedInHTTPMode(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(p, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GRILL_INGEST_ALLOWED_PREFIX", "")
+
+	SetHTTPMode(true)
+	t.Cleanup(func() { SetHTTPMode(false) })
+	if _, err := readFileForIngest(p); err == nil || !strings.Contains(err.Error(), "hosted HTTP server") {
+		t.Fatalf("http mode without prefix must refuse file_path, got err=%v", err)
+	}
+	// The refusal surfaces as invalid_input through the payload resolver.
+	if _, _, err := resolveGrillIngestPayload(GrillIngestInput{FilePath: p}); err == nil {
+		t.Fatal("resolveGrillIngestPayload must propagate the refusal")
+	}
+
+	// Operator opt-in: a prefix re-enables reads, still confined to it.
+	t.Setenv("GRILL_INGEST_ALLOWED_PREFIX", dir)
+	if data, err := readFileForIngest(p); err != nil || string(data) != "hello" {
+		t.Fatalf("http mode with prefix should read the file, got %q err=%v", data, err)
+	}
+
+	SetHTTPMode(false)
+	t.Setenv("GRILL_INGEST_ALLOWED_PREFIX", "")
+	if data, err := readFileForIngest(p); err != nil || string(data) != "hello" {
+		t.Fatalf("stdio mode must be unchanged, got %q err=%v", data, err)
 	}
 }
