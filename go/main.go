@@ -155,6 +155,10 @@ func runHttpMcpServer(server *mcp.Server) {
 	if *inputPath != "" {
 		slog.Warn("ignoring -input in HTTP mode")
 	}
+	// file_path would read this process's filesystem; refuse it on the hosted
+	// server unless GRILL_INGEST_ALLOWED_PREFIX opts a directory in.
+	tools.SetHTTPMode(true)
+
 	// Stateless mode, per the sessionless direction of protocol version 2026-07-28
 	// (SEP-2567 / SEP-2575): no initialize/initialized handshake, no Mcp-Session-Id,
 	// each POST carries its protocol version and client capabilities in _meta and is

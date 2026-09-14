@@ -21,6 +21,8 @@ The Go binary is the default everywhere the instructions below don't specify oth
 
 Sign up at [console.poma-ai.com](https://console.poma-ai.com) and create a grill project. Copy the API key.
 
+A **project key** (`poma_proj_gr_…`) is bound to one project server-side. The server resolves that project through the API's `/projects/info` (the projects list refuses project keys), so `scope.source` reads `project API key` and `scope.hint` names the project, and `grill_projects` returns that one project instead of a 403. Leave `POMA_PROJECT_ID` unset, or equal to that project: a `project_id` argument or `POMA_PROJECT_ID` naming a different project is answered by the API with `409 project_id_conflict`, which the tools report as terminal `invalid_input`. An **account key** (`poma_acc_…`) or a login token addresses all projects; pick one with `POMA_PROJECT_ID` or the `project_id` argument.
+
 ## 2. Install
 
 - **Go** — see [Install](./go/README.md#2-install) in `go/README.md`
@@ -98,6 +100,8 @@ Auth is **OAuth 2.0**: the first time your client connects, it gets a `401` with
 ```
 
 > Prefer an API key instead of OAuth? Add `"headers": { "x-api-key": "your-api-key" }` to the config above. The hosted endpoint accepts both.
+
+> On the hosted endpoint, `file_path` / `file_paths` are refused (`invalid_input`): a path would be read from the server's filesystem, not from your machine. Ingest by `url` or `file_base64` there, or run the binary locally (Option A) for folder ingest. Self-hosters can opt a directory in with `GRILL_INGEST_ALLOWED_PREFIX` — point it at a dedicated upload directory, never at `/` or the working directory, because every path under it becomes readable to every caller.
 
 That's it. You can now ask the agent to ingest a document and search it:
 

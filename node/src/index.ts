@@ -6,6 +6,8 @@ import { Readable } from "node:stream";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
+import { setHTTPMode } from "./client/ingestPayload.js";
+
 import { createServer } from "./server.js";
 
 interface CLIArgs {
@@ -63,10 +65,9 @@ async function runStdio(inputPath: string): Promise<void> {
 
 async function runHTTP(addr: string): Promise<void> {
   const { hostname, port } = parseAddr(addr);
-  const server = createServer();
-  // Stateless mode: each request is independent — no session id tracking.
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  await server.connect(transport);
+  // file_path would read this process's filesystem; refuse it on the hosted
+  // server unless GRILL_INGEST_ALLOWED_PREFIX opts a directory in.
+  setHTTPMode(true);
 
   const httpServer = createHTTPServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "";
@@ -75,7 +76,30 @@ async function runHTTP(addr: string): Promise<void> {
       res.end('{"status":"ok"}');
       return;
     }
-    await transport.handleRequest(req, res);
+    // Stateless mode: each request is independent — no session id tracking.
+    // The SDK refuses to reuse a stateless transport across requests ("Create
+    // a new transport per request"), so a shared instance answered only the
+    // first request and every later one got an empty 500. Build server +
+    // transport per request and tear them down when the response closes.
+    const server = createServer();
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on("close", () => {
+      void transport.close();
+      void server.close();
+    });
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`mcp request failed: ${msg}\n`);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32603, message: "Internal error" }, id: null }));
+      } else {
+        res.end();
+      }
+    }
   });
 
   httpServer.listen(port, hostname, () => {

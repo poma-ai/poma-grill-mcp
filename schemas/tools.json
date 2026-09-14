@@ -38,7 +38,7 @@
             "type": "string"
           },
           "file_path": {
-            "description": "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES.",
+            "description": "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Not available on the hosted HTTP server (it would read the server's filesystem) unless the operator sets GRILL_INGEST_ALLOWED_PREFIX — use url or file_base64 there. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES.",
             "type": "string"
           },
           "filename": {
@@ -133,7 +133,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -158,7 +158,7 @@
             "type": "string"
           },
           "file_path": {
-            "description": "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES.",
+            "description": "Absolute or cwd-relative path readable by the MCP server process (local stdio). Preferred for large files. Mutually exclusive with file_base64. Not available on the hosted HTTP server (it would read the server's filesystem) unless the operator sets GRILL_INGEST_ALLOWED_PREFIX — use url or file_base64 there. Optional env: GRILL_INGEST_ALLOWED_PREFIX, GRILL_INGEST_MAX_BYTES.",
             "type": "string"
           },
           "filename": {
@@ -253,7 +253,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -353,7 +353,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -378,7 +378,7 @@
             "type": "integer"
           },
           "file_paths": {
-            "description": "Absolute or cwd-relative paths readable by the MCP server process. Max 50 files.",
+            "description": "Absolute or cwd-relative paths readable by the MCP server process (local stdio). Max 50 files. Not available on the hosted HTTP server unless the operator sets GRILL_INGEST_ALLOWED_PREFIX.",
             "items": {
               "type": "string"
             },
@@ -446,7 +446,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -663,7 +663,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -743,7 +743,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -763,7 +763,7 @@
         "readOnlyHint": true,
         "title": "List Projects"
       },
-      "description": "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
+      "description": "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools. With a project API key (poma_proj_…) the gateway refuses the account listing; the tool then returns just the one project the key is bound to. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
       "inputSchema": {
         "properties": {
           "product": {

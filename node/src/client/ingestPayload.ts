@@ -30,10 +30,28 @@ function isUnderAllowedPrefix(targetAbs: string, prefixAbs: string): boolean {
   return rp.startsWith(rd + sep);
 }
 
+// httpMode is set by index.ts when the server runs as a (hosted) HTTP
+// endpoint. In that mode file_path points at the SERVER's filesystem, not the
+// user's laptop, so path-based ingest is refused unless the operator has
+// deliberately exposed a directory via GRILL_INGEST_ALLOWED_PREFIX. Mirrors
+// go/tools/ingest_payload.go.
+let httpMode = false;
+
+export function setHTTPMode(on: boolean): void {
+  httpMode = on;
+}
+
+export const ERR_FILE_PATH_HOSTED =
+  "file_path is not available on the hosted HTTP server: the path would be read from the server's own filesystem, not from your machine. " +
+  "Pass url or file_base64, or run the local stdio server. (Operators can opt in by setting GRILL_INGEST_ALLOWED_PREFIX.)";
+
 function readFileForIngest(path: string): Uint8Array {
   const trimmed = path.trim();
   if (trimmed === "" || trimmed === ".") {
     throw new Error("file_path is empty");
+  }
+  if (httpMode && (process.env.GRILL_INGEST_ALLOWED_PREFIX ?? "").trim() === "") {
+    throw new Error(ERR_FILE_PATH_HOSTED);
   }
   let abs = trimmed;
   if (!isAbsolute(abs)) {
