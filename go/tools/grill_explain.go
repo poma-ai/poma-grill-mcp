@@ -25,7 +25,7 @@ POMA Grill is a managed context engine. Ingest any document, then search it with
 1. Go to https://console.poma-ai.com
 2. Create a new Grill project
 3. Copy the generated API key
-4. Set it as POMA_API_KEY environment variable, or pass it as the ` + "`token`" + ` argument to any tool
+4. Set it as POMA_GRILL_API_KEY (project key) or POMA_API_KEY (account key) environment variable, or pass it as the ` + "`token`" + ` argument to any tool
 
 ## Ingesting Data
 

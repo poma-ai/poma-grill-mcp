@@ -30,7 +30,7 @@ Do not retry. Fix the cause or abort and tell the user.
 
 | Code | Meaning | What to do |
 |---|---|---|
-| `missing_token` | No credential resolved. | Set `POMA_API_KEY` on the server process, use the hosted endpoint's OAuth flow, or pass `token` on the call. |
+| `missing_token` | No credential resolved. | Set `POMA_GRILL_API_KEY` (project key) or `POMA_API_KEY` (account key) on the server process, use the hosted endpoint's OAuth flow, or pass `token` on the call. |
 | `auth_expired` | Credential rejected or expired. | Re-authenticate at [console.poma-ai.com](https://console.poma-ai.com). Say explicitly which key was rejected and which one is needed. |
 | `payment_required` | Plan limit hit. | Upgrade at [console.poma-ai.com](https://console.poma-ai.com). |
 | `forbidden` | Credential is valid but not authorized for this project or action. | Check the project with `grill_projects`; the key may be scoped to a different one. |

@@ -71,7 +71,7 @@ brews:
     homepage: https://github.com/poma-ai/poma-grill-mcp
     description: MCP server for the POMA AI Grill API
     caveats: |
-      You need a JWT: export POMA_API_KEY or use --token / --json.
+      You need a JWT: export POMA_GRILL_API_KEY (project key) or POMA_API_KEY (account key), or use --token / --json.
     post_install: |
       if OS.mac?
         system "/usr/bin/xattr", "-dr", "com.apple.quarantine", "#{bin}/poma-grill-mcp"

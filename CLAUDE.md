@@ -59,7 +59,7 @@ The server has two modes, selected at startup:
 
 **Grill HTTP client** is in `go/tools/grill_client.go` — placeholder wrappers around `(*client.Client).Do` / `DoJSON` until `poma-cli` adds native Grill methods.
 
-**Authentication**: Per-call `token` argument takes precedence over `POMA_API_KEY` env var (resolved in `go/tools/common.go:getToken`).
+**Authentication**: Per-call `token` argument takes precedence over the env vars; env lookup is `POMA_GRILL_API_KEY` (project key) then `POMA_API_KEY` (account key or login token, scope with `POMA_PROJECT_ID`) — resolved in `go/tools/common.go:getToken` / `node/src/common.ts:getToken`. Both names must stay accepted: the mcpb manifest and every published client config use `POMA_API_KEY`. `POMA_PROJECT_ID` is still sent as `X-Project-ID` whichever variable supplied the token; with a project key the API returns 409 if they disagree, and neither implementation maps that status yet.
 
 **API base URLs** can be overridden via `POMA_API_BASE_URL` and `POMA_STATUS_API_BASE_URL` env vars.
 

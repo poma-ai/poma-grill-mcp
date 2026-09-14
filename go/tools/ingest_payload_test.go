@@ -23,7 +23,7 @@ func TestHandleIngestUploadMissingToken(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal response: %v; body=%s", err, rec.Body.String())
 	}
-	if got.Error != "missing API token (x-api-key, Authorization: Bearer, or POMA_API_KEY)" {
+	if got.Error != "missing API token (x-api-key, Authorization: Bearer, POMA_GRILL_API_KEY, or POMA_API_KEY)" {
 		t.Fatalf("error message changed: %q", got.Error)
 	}
 	if got.Code != CodeMissingToken {

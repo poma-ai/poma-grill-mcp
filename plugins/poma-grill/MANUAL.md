@@ -3,7 +3,7 @@
 This plugin ships three things:
 
 - **`skills/grill-ingest`** and **`skills/grill-search`** — instructions the agent loads when a task matches.
-- **One MCP server** — the hosted POMA Grill endpoint at `https://mcp.poma-ai.com/grill`, which provides the `grill_*` tools.
+- **One MCP server** — the hosted POMA Grill endpoint at `https://mcp.poma-ai.com`, which provides the `grill_*` tools.
 
 Skills are portable across clients. The MCP server has to be declared in each client's
 own config format, so the same server appears three times below with different syntax.
@@ -137,7 +137,7 @@ Add headers to `.mcp.json`:
   "mcpServers": {
     "poma-grill": {
       "type": "http",
-      "url": "https://mcp.poma-ai.com/grill",
+      "url": "https://mcp.poma-ai.com",
       "headers": { "x-api-key": "your-api-key" }
     }
   }
@@ -169,7 +169,7 @@ Add to `~/.cursor/mcp.json`:
 {
   "mcpServers": {
     "poma-grill": {
-      "url": "https://mcp.poma-ai.com/grill"
+      "url": "https://mcp.poma-ai.com"
     }
   }
 }
@@ -182,7 +182,7 @@ instead of OAuth:
 {
   "mcpServers": {
     "poma-grill": {
-      "url": "https://mcp.poma-ai.com/grill",
+      "url": "https://mcp.poma-ai.com",
       "headers": { "x-api-key": "your-api-key" }
     }
   }
@@ -213,7 +213,7 @@ Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.poma-grill]
-url = "https://mcp.poma-ai.com/grill"
+url = "https://mcp.poma-ai.com"
 bearer_token_env_var = "POMA_API_KEY"
 ```
 

@@ -49,8 +49,12 @@ class MCPClient {
   private stderr = "";
 
   constructor(env: Record<string, string>) {
+    // Never inherit a credential from the developer's shell: the server reads
+    // POMA_GRILL_API_KEY before POMA_API_KEY, and the error-path cases below
+    // depend on neither being set unless the test sets it.
+    const { POMA_API_KEY: _acc, POMA_GRILL_API_KEY: _proj, ...base } = process.env;
     this.proc = spawn(process.execPath, [BINARY, "-input", "-"], {
-      env: { ...process.env, ...env },
+      env: { ...base, ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.proc.stderr.setEncoding("utf8");

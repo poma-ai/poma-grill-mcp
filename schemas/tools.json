@@ -57,7 +57,7 @@
             "type": "string"
           },
           "token": {
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
             "type": "string"
           },
           "url": {
@@ -156,7 +156,7 @@
             "type": "string"
           },
           "token": {
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
             "type": "string"
           },
           "url": {
@@ -236,7 +236,7 @@
             "type": "string"
           },
           "token": {
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
             "type": "string"
           }
         },
@@ -326,7 +326,7 @@
             "type": "string"
           },
           "token": {
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
             "type": "string"
           }
         },
@@ -414,7 +414,7 @@
             "type": "array"
           },
           "token": {
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
             "type": "string"
           }
         },
@@ -494,7 +494,7 @@
             "type": "boolean"
           },
           "token": {
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
             "type": "string"
           }
         },
@@ -575,7 +575,7 @@
             "type": "string"
           },
           "token": {
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
             "type": "string"
           }
         },
@@ -662,7 +662,7 @@
             "type": "string"
           },
           "token": {
-            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
+            "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_GRILL_API_KEY / POMA_API_KEY env vars. Only pass explicitly to override.",
             "type": "string"
           }
         },

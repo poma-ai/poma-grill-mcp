@@ -2,7 +2,7 @@
 
 Ingest documents into the [POMA Grill](https://poma-ai.com) context engine and run semantic search — from any MCP client (Claude Code, Claude Desktop, Cursor, or your own agent).
 
-**Hosted at [`https://mcp.poma-ai.com/grill`](https://mcp.poma-ai.com/grill)** with OAuth 2.0 — no install, no API key in config. See [Option B](#option-b--hosted-http-endpoint-no-binary-required-oauth) below. Or run the binary yourself ([Option A](#option-a--run-the-binary-locally-stdio)).
+**Hosted at [`https://mcp.poma-ai.com`](https://mcp.poma-ai.com)** with OAuth 2.0 — no install, no API key in config. See [Option B](#option-b--hosted-http-endpoint-no-binary-required-oauth) below. Or run the binary yourself ([Option A](#option-a--run-the-binary-locally-stdio)).
 
 ## 1. Get an API key
 
@@ -46,7 +46,7 @@ Paste this into your MCP config — replace the path and key.
 ```json
 {
   "mcpServers": {
-    "poma-grill-mcp": {
+    "poma-grill": {
       "command": "/full/path/to/poma-grill-mcp",
       "args": ["-input", "-"],
       "env": {
@@ -59,7 +59,7 @@ Paste this into your MCP config — replace the path and key.
 
 ### Option B — hosted HTTP endpoint (no binary required, OAuth)
 
-POMA runs the server at **`https://mcp.poma-ai.com/grill`**. Point your MCP client at it directly — no local install, no API key in your config.
+POMA runs the server at **`https://mcp.poma-ai.com`**. Point your MCP client at it directly — no local install, no API key in your config. Any path on that host works the same (`/grill` and `/v1` from older docs keep working); the server ignores it.
 
 Auth is **OAuth 2.0**: the first time your client connects, it gets a `401` with a `WWW-Authenticate` challenge, then walks you through a browser-based login at [console.poma-ai.com](https://console.poma-ai.com). MCP SDKs (Claude Code, Claude Desktop, Cursor, etc.) handle this end-to-end — Dynamic Client Registration, authorize, token exchange, refresh — automatically. See [OAuth 2.0 support](#oauth-20-support) below for the server-side details.
 
@@ -67,9 +67,9 @@ Auth is **OAuth 2.0**: the first time your client connects, it gets a `401` with
 ```json
 {
   "mcpServers": {
-    "poma-grill-mcp": {
+    "poma-grill": {
       "type": "http",
-      "url": "https://mcp.poma-ai.com/grill"
+      "url": "https://mcp.poma-ai.com"
     }
   }
 }
@@ -79,8 +79,8 @@ Auth is **OAuth 2.0**: the first time your client connects, it gets a `401` with
 ```json
 {
   "mcpServers": {
-    "poma-grill-mcp": {
-      "url": "https://mcp.poma-ai.com/grill"
+    "poma-grill": {
+      "url": "https://mcp.poma-ai.com"
     }
   }
 }
@@ -172,7 +172,7 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 | `url` | string | one-of | Remote URL the **POMA Grill server** fetches and ingests. The MCP itself does not download it. |
 | `filename` | string | no | Original basename (e.g. `report.pdf`). With `file_path`, defaults to the path basename; otherwise inferred from bytes when possible. |
 | `labels` | object | no | Optional `{key: value}` labels attached to the document (sent as the `X-Labels` header). Avoid `:` and `,` in keys/values. |
-| `token` | string | no | API key — omit if `POMA_API_KEY` is set on the server process |
+| `token` | string | no | API key — omit if `POMA_GRILL_API_KEY` or `POMA_API_KEY` is set on the server process |
 
 **`file_path` notes**
 
