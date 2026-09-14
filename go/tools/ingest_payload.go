@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"math"
 	"mime"
 	"net/http"
 	"os"
@@ -297,4 +299,99 @@ func writeIngestUploadError(w http.ResponseWriter, httpStatus int, ge GrillError
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(httpStatus)
 	_ = json.NewEncoder(w).Encode(ge)
+}
+
+// defaultMCPMaxBodyBytes bounds an MCP JSON-RPC request body.
+//
+// This is deliberately far below GRILL_INGEST_MAX_BYTES. A base64 file inside a
+// JSON-RPC message is buffered several times over before the bytes reach the
+// Grill API — the stateless HTTP path reads the body, re-buffers it, re-reads
+// it, the tool arguments are unmarshalled and re-marshalled to apply schema
+// defaults, and only then is the base64 decoded — so the peak cost is a
+// multiple of the body size. Large files belong on the paths built for them:
+// file_path over stdio, or POST /ingest-upload over HTTP, which buffers once.
+const defaultMCPMaxBodyBytes int64 = 16 << 20 // 16 MiB => ~12 MiB of file
+
+// MCPRequestBodyBytes returns the byte limit for an MCP HTTP request body, in
+// the form expected by mcp.StreamableHTTPOptions.MaxRequestBodyBytes
+// (0 = SDK default of 4 MiB, negative = unlimited).
+//
+// GRILL_MCP_MAX_BODY_BYTES overrides defaultMCPMaxBodyBytes; "0" means
+// unlimited, which removes the only bound on how much a single request can
+// make the server allocate. A GRILL_INGEST_MAX_BYTES small enough to make the
+// default unreachable lowers the limit to match, so that an operator who caps
+// ingest does not still accept oversized MCP bodies.
+//
+// The result is never 0: that would silently mean the SDK's 4 MiB default,
+// which is too small for base64 ingest of even a modest document.
+func MCPRequestBodyBytes() int64 {
+	invalid := ""
+	if v := strings.TrimSpace(os.Getenv("GRILL_MCP_MAX_BODY_BYTES")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		switch {
+		case err != nil || n < 0:
+			invalid = v
+		case n == 0:
+			return -1 // explicit operator opt-out
+		default:
+			return n
+		}
+	}
+	limit := defaultMCPMaxBodyBytes
+	if n := base64BodyBytes(ingestMaxBytes()); n > 0 && n < limit {
+		limit = n // an ingest cap this small makes the default unreachable
+	}
+	if invalid != "" {
+		slog.Warn("ignoring invalid GRILL_MCP_MAX_BODY_BYTES", "value", invalid, "using", limit)
+	}
+	return limit
+}
+
+// MCPMaxLineLength returns the byte limit for a single inbound MCP JSON-RPC
+// frame over stdio, in the form expected by mcp.IOTransport.MaxLineLength
+// (0 = SDK default of 16 MiB, negative = uncapped).
+//
+// go-sdk v1.8.0 started bounding stdio frames at DefaultMaxLineLength (16 MiB);
+// v1.7.0 buffered a frame of any size. Overrunning the cap is fatal rather than
+// per-request: the decoder errors, its read loop exits and the session ends, so
+// the offending request gets no JSON-RPC error and neither does any request after
+// it. At the SDK default that kills the session for any file_base64 above ~12 MiB
+// — a size ingestMaxBytes (512 MiB by default) explicitly permits — so the frame
+// limit is sized off the ingest ceiling the tool actually enforces.
+//
+// Deliberately not GRILL_MCP_MAX_BODY_BYTES. That knob is sized for the HTTP path,
+// where a remote body is re-buffered several times over before the bytes reach the
+// Grill API; a local pipe does not pay that cost. Binding the two would also make
+// an ingest-file knob a fatal bound on calls that carry no file at all.
+//
+// The floor is what keeps that from happening here: lowering GRILL_INGEST_MAX_BYTES
+// caps how large a file may be, not how large an unrelated grill_search may be.
+//
+// This bounds the protocol frame, not the allocation. drainReader materializes a
+// whole line before the SDK's limiter sees a byte (see NewDrainingStdio), so peak
+// memory still tracks the frame the client sends, not this limit.
+func MCPMaxLineLength() int {
+	n := base64BodyBytes(ingestMaxBytes())
+	if n < 0 {
+		return -1 // ingest unlimited, or so large the scaled value overflowed: no cap
+	}
+	if n < defaultMCPMaxBodyBytes {
+		n = defaultMCPMaxBodyBytes // never let an ingest cap bound unrelated calls
+	}
+	if n > math.MaxInt {
+		return math.MaxInt // unrepresentable as an int here; keep a cap, do not fail open
+	}
+	return int(n)
+}
+
+// base64BodyBytes scales an ingest byte limit up by the base64 4/3 expansion and
+// adds slack for the JSON-RPC envelope, giving the body size that carries a
+// file of that limit. It returns -1 when the limit is unset or so large that the
+// scaled value would not fit in an int64.
+func base64BodyBytes(limit int64) int64 {
+	const slack = 64 << 10
+	if limit <= 0 || limit > (math.MaxInt64-slack)/4*3 {
+		return -1
+	}
+	return limit/3*4 + slack
 }
