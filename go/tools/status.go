@@ -16,9 +16,95 @@ import (
 
 // jobStatusFull is the full SSE event payload from the status server, including fields the client library does not expose.
 type jobStatusFull struct {
-	IsTerminal bool   `json:"is_terminal"`
-	Status     string `json:"status"`
-	Error      string `json:"error,omitempty"`
+	IsTerminal bool             `json:"is_terminal"`
+	Status     string           `json:"status"`
+	Error      string           `json:"error,omitempty"`
+	Grill      *jobGrillOutcome `json:"grill,omitempty"`
+}
+
+// jobGrillOutcome is the optional `grill` object the gateway attaches to a job
+// status (poma-services-go#133). Nil when the gateway did not send it — older
+// gateways, non-grill jobs, or a job that has not reached the grill stage yet.
+//
+// Deduplicated: the same input bytes under the same conversion build were
+// already indexed; nothing new was stored and DocID names the existing
+// document (it may differ from the job_id). ReplacedDocIDs: documents grill
+// evicted in favour of this job after a conversion-build change.
+type jobGrillOutcome struct {
+	Deduplicated   bool     `json:"deduplicated"`
+	DocID          string   `json:"doc_id,omitempty"`
+	ReplacedDocIDs []string `json:"replaced_doc_ids,omitempty"`
+}
+
+// UnmarshalJSON decodes a status event, tolerating any `grill` value the
+// gateway sends. `grill` is owned by the gateway and is not needed to act on a
+// job, so a shape change there must never invalidate the status it rides on: a
+// rejected terminal event makes the SSE wait in readJobStatusStream hang, and
+// makes peekJobStatus report parse_error for a job that actually succeeded.
+// Before `grill` was typed here it was an unknown field and was ignored, so
+// strict decoding would be a regression. Field-wise leniency also keeps Go
+// byte-identical to Node's grillOutcomeFields, which coerces the same way.
+func (s *jobStatusFull) UnmarshalJSON(b []byte) error {
+	// alias drops this method, so the embedded decode does not recurse. The
+	// outer Grill is shallower than alias's, so encoding/json binds `grill` to
+	// the raw bytes and leaves alias.Grill nil.
+	type alias jobStatusFull
+	var raw struct {
+		alias
+		Grill json.RawMessage `json:"grill"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*s = jobStatusFull(raw.alias)
+	s.Grill = parseGrillOutcome(raw.Grill)
+	return nil
+}
+
+// parseGrillOutcome decodes the gateway's `grill` value field by field,
+// discarding anything of the wrong type rather than failing the whole object.
+// Only a JSON object yields an outcome: null, a string, a number and an array
+// all return nil, matching Node's grillOutcomeFields.
+func parseGrillOutcome(raw json.RawMessage) *jobGrillOutcome {
+	if len(raw) == 0 {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		// Not a JSON object, or the literal null.
+		return nil
+	}
+	out := &jobGrillOutcome{}
+	var dedup bool
+	if err := json.Unmarshal(fields["deduplicated"], &dedup); err == nil {
+		out.Deduplicated = dedup
+	}
+	var docID string
+	if err := json.Unmarshal(fields["doc_id"], &docID); err == nil {
+		out.DocID = docID
+	}
+	var replaced []json.RawMessage
+	if err := json.Unmarshal(fields["replaced_doc_ids"], &replaced); err == nil {
+		for _, item := range replaced {
+			var id string
+			if err := json.Unmarshal(item, &id); err == nil && id != "" {
+				out.ReplacedDocIDs = append(out.ReplacedDocIDs, id)
+			}
+		}
+	}
+	return out
+}
+
+// lastGrillOutcome returns the grill object of the most recent status event
+// that carried one, or nil. The gateway attaches it to the terminal status, so
+// this is the outcome to surface at the top level of a wait-style tool output.
+func lastGrillOutcome(events []jobStatusFull) *jobGrillOutcome {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Grill != nil {
+			return events[i].Grill
+		}
+	}
+	return nil
 }
 
 // jobProgressWire is the JSON payload in MCP progress notifications.

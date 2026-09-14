@@ -27,7 +27,9 @@ documents and run semantic search over them directly from your desktop MCP host
 | `grill_explain` | Explain how POMA Grill works (no authentication required). |
 
 A returned `job_id` doubles as the `doc_id` for `grill_search` — pass it as
-`doc_filter` to scope a query to a single document.
+`doc_filter` to scope a query to a single document. The exception is a result
+that carries a `grill` object: use `grill.doc_id` there, since a dedup hit makes
+the two differ and the `job_id` matches no indexed document.
 
 ## Privacy & data
 

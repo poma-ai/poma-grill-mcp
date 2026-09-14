@@ -25,7 +25,7 @@ server decides how much to return based on relevance and budget.
 | Argument | Use it for |
 |---|---|
 | `query` | The natural-language question. Required. |
-| `doc_filter` | Restrict to a single document. The value is the `job_id` returned by ingest (`doc_id` and `job_id` are the same string). |
+| `doc_filter` | Restrict to a single document. The value is the `job_id` returned by ingest, which is normally the same string as `doc_id` — but when the ingest result or `grill_jobs_status` carried a `grill` object, use `grill.doc_id` instead: on a dedup hit the two differ and the `job_id` matches no indexed document. |
 | `exclude_doc_ids` | Up to 100 doc ids to leave out. In an agent loop, pass the docs you have already cited so each round surfaces something new. |
 | `return_assets` | Include asset references in the context. |
 | `return_page_images` | Include page image references. |

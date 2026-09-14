@@ -98,8 +98,8 @@ For **large files**, have the agent pass `file_path` to `grill_ingest` / `grill_
 
 ## Typical workflow
 
-1. **`grill_ingest_sync`** (or `grill_ingest`) — upload a document; use **`file_path`** for large files. Note the returned `job_id` (same as `doc_id` when done).
-2. **`grill_search`** — query the context engine; pass `job_id` as `doc_filter` to restrict to one doc
+1. **`grill_ingest_sync`** (or `grill_ingest`) — upload a document; use **`file_path`** for large files. Note the returned `job_id` (same as `doc_id` when done, unless the result carries a `grill` object — then `grill.doc_id` is the document).
+2. **`grill_search`** — query the context engine; pass `job_id` as `doc_filter` to restrict to one doc (or `grill.doc_id` when the ingest reported one, see [Dedup and re-ingest](../README.md#dedup-and-re-ingest))
 
 ---
 
@@ -159,7 +159,7 @@ Ingest ~/docs/spec.pdf into POMA Grill, then search it for authentication requir
 | `grill_ingest_resume` | Reconnect to an in-progress job's status stream and wait until terminal. Useful when a previous `grill_ingest` returned a `job_id` and you need to wait without re-uploading. |
 | `grill_ingest_batch` | Upload up to 50 files with controlled concurrency (default 5, max 10). Returns `job_ids` immediately after uploads complete; use `grill_jobs_status` to monitor. |
 | `grill_jobs_status` | Get current status snapshots for up to 50 jobs in one call. No streaming. |
-| `grill_search` | Hybrid search returning concatenated context text for RAG. Set `doc_filter` (= `job_id`) to restrict to one document. |
+| `grill_search` | Hybrid search returning concatenated context text for RAG. Set `doc_filter` (= `job_id`, or `grill.doc_id` on a dedup hit) to restrict to one document. |
 
 ### `grill_ingest` / `grill_ingest_sync` arguments
 
@@ -216,7 +216,7 @@ Returns `{results, submitted_count, failed_count, quota_exceeded_count}`. `quota
 | `job_ids` | array of string | yes | Up to 50 job IDs to query. |
 | `token` | string | no | API key |
 
-Returns `{results, pending_count, done_count, failed_count}`. Each result has `{job_id, status, is_terminal, error?}`.
+Returns `{results, pending_count, done_count, failed_count}`. Each result has `{job_id, status, is_terminal, grill?, error?}` — see [Dedup and re-ingest](../README.md#dedup-and-re-ingest) for `grill`.
 
 ---
 

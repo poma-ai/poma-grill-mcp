@@ -12,7 +12,8 @@ metadata:
 
 Grill turns a document into semantically chunked, searchable context. Ingest returns a
 `job_id`; once the job reaches a terminal state that same id is the `doc_id` you pass to
-`grill_search` as `doc_filter`.
+`grill_search` as `doc_filter` — except when the result carries a `grill` object, where
+`grill.doc_id` is the document to filter on. See [Re-ingesting a file](#re-ingesting-a-file).
 
 ## Pick the right tool
 
@@ -72,18 +73,39 @@ Every error carries a machine-readable `code`. Branch on the code, never on the 
 message. Retry only when `retryable` is true, and only after `retry_after_seconds`.
 Full table: [references/errors.md](references/errors.md).
 
+## Re-ingesting a file
+
+Re-ingesting is safe and the job succeeds either way, but what Grill did with it depends on
+whether anything changed. When the gateway reports the outcome, `grill_ingest_sync`,
+`grill_ingest_resume` and each `grill_jobs_status` result carry a `grill` object:
+`{"deduplicated": bool, "doc_id": string, "replaced_doc_ids": [string]}`.
+
+Whenever that object is present, **`grill.doc_id` is the document to pass as `doc_filter`** —
+not `job_id`. The two differ on a dedup hit, and filtering on the `job_id` there matches no
+indexed document and silently returns nothing.
+
+- `deduplicated: true` — the same bytes under the same conversion build were already indexed.
+  Nothing new was stored (conversion credits are still consumed) and `doc_id` names the
+  document that was already there.
+- `deduplicated: false` with `replaced_doc_ids` — a newer conversion build replaced the
+  listed older documents; `doc_id` is the replacement.
+- `deduplicated: false` with no `replaced_doc_ids` — a plain ingest; `doc_id` equals `job_id`.
+
+The object is absent on older gateways, or before the job reaches the grill stage.
+
 ## Worked example
 
 User: "grill my ~/docs/contract.pdf and find the indemnification clause"
 
 1. `grill_ingest_sync` with `file_path: "/Users/me/docs/contract.pdf"`.
-2. Read `job_id` and `scope` from the result; tell the user the project name.
-3. `grill_search` with `query: "indemnification clause"` and `doc_filter: <job_id>`.
+2. Read `job_id`, `grill` and `scope` from the result; tell the user the project name.
+3. `grill_search` with `query: "indemnification clause"`, and `doc_filter` set to
+   `grill.doc_id` when the result carried a `grill` object, otherwise to `job_id`.
 
 ## Very large files, no MCP
 
 Documents big enough to strain the MCP transport can go straight to the API: `POST` the
 raw bytes to `/grill/ingest` with `Content-Type: application/octet-stream` and
 `Content-Disposition: attachment; filename="…"`. You get back the same `job_id`, usable as
-`doc_filter` in `grill_search`. The Go binary also exposes `POST /ingest-upload` in HTTP
+`doc_filter` in `grill_search` under the same caveat as above. The Go binary also exposes `POST /ingest-upload` in HTTP
 mode for the same purpose.
