@@ -113,7 +113,7 @@ For **large files**, have the agent pass `file_path` to `grill_ingest` / `grill_
 
 ## Typical workflow
 
-1. **`grill_ingest_sync`** (or `grill_ingest`) — upload a document; use **`file_path`** for large files. Note the returned `job_id` (same as `doc_id` when done).
+1. **`grill_ingest_sync`** (or `grill_ingest`) — upload a document; use **`file_path`** for large files. Note the returned `job_id` (same as `doc_id` when done, unless the result carries a `grill` object — then `grill.doc_id` is the document).
 2. **`grill_search`** — query the context engine; pass `job_id` as `doc_filter` to restrict to one doc (or `grill.doc_id` if the ingest reported a dedup hit, see [Dedup and re-ingest](#dedup-and-re-ingest))
 
 ---

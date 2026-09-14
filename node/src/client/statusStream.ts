@@ -27,12 +27,18 @@ export interface JobGrillOutcome {
 // replaced_doc_ids only when non-empty), or undefined when the gateway sent
 // none. Mirrors Go's jobGrillOutcome JSON tags.
 export function grillOutcomeFields(g: unknown): JobGrillOutcome | undefined {
-  if (g === null || typeof g !== "object") return undefined;
+  // Only a JSON object yields an outcome — null, a string, a number and an
+  // array all return undefined. Mirrors Go's parseGrillOutcome, which decodes
+  // into a map and so rejects the same set.
+  if (g === null || typeof g !== "object" || Array.isArray(g)) return undefined;
   const raw = g as Record<string, unknown>;
   const out: JobGrillOutcome = { deduplicated: raw.deduplicated === true };
   if (typeof raw.doc_id === "string" && raw.doc_id !== "") out.doc_id = raw.doc_id;
-  if (Array.isArray(raw.replaced_doc_ids) && raw.replaced_doc_ids.length > 0) {
-    out.replaced_doc_ids = raw.replaced_doc_ids.map(String);
+  if (Array.isArray(raw.replaced_doc_ids)) {
+    // Drop non-string and empty entries rather than String()-ing them: String(null)
+    // is "null", which would hand an agent a doc id that does not exist.
+    const ids = raw.replaced_doc_ids.filter((x): x is string => typeof x === "string" && x !== "");
+    if (ids.length > 0) out.replaced_doc_ids = ids;
   }
   return out;
 }

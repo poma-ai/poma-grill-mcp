@@ -459,6 +459,14 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       } else if (scenario === "jsreplaced") {
         // Conversion-build change: this job replaced an older document.
         res.end('{"is_terminal":true,"status":"done","grill":{"deduplicated":false,"doc_id":"job-1","replaced_doc_ids":["doc-old"]}}');
+      } else if (scenario === "jsbadgrill") {
+        // A `grill` of the wrong JSON type must not invalidate the status it
+        // rides on: the job is done and must be reported as done.
+        res.end('{"is_terminal":true,"status":"done","grill":"not-an-object"}');
+      } else if (scenario === "jsbadfields") {
+        // Wrong types inside grill, plus a null in replaced_doc_ids. String(null)
+        // would be the four-character id "null"; both impls must drop it.
+        res.end('{"is_terminal":true,"status":"done","grill":{"deduplicated":"yes","doc_id":123,"replaced_doc_ids":["a",null,"","b"]}}');
       } else {
         res.end('{"is_terminal":true,"status":"done"}');
       }
@@ -471,6 +479,8 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       res.write('event: job_status\ndata: {"is_terminal":false,"status":"queued"}\n\n');
       if (scenario === "jsdedup") {
         res.write('event: job_status\ndata: {"is_terminal":true,"status":"done","grill":{"deduplicated":true,"doc_id":"doc-orig","replaced_doc_ids":[]}}\n\n');
+      } else if (scenario === "jsbadgrill") {
+        res.write('event: job_status\ndata: {"is_terminal":true,"status":"done","grill":"not-an-object"}\n\n');
       } else {
         res.write('event: job_status\ndata: {"is_terminal":true,"status":"done"}\n\n');
       }
@@ -683,6 +693,31 @@ async function errorCodeTests(
     const plain = await callTool(stubClient, "grill_ingest_resume", { token: "js200", job_id: "job-1" });
     const okPlain = !plain.isError && !("grill" in plain.content);
     record("ingest_resume omits grill when absent", okPlain, okPlain ? undefined : JSON.stringify(plain.content));
+  }
+  // 18. A `grill` of the wrong JSON type must not invalidate the status event it
+  //     rides on. Go decodes the same way (go/tools/grill_outcome_test.go,
+  //     TestJobStatusTolerantGrillDecode): a non-object grill is dropped and the
+  //     job still reports done, rather than becoming parse_error or, on the SSE
+  //     path, a terminal event the reader discards and then waits forever for.
+  {
+    const { isError, content } = await callTool(stubClient, "grill_jobs_status", { token: "jsbadgrill", job_ids: ["job-1"] });
+    const r = content.results?.[0] as Record<string, unknown> | undefined;
+    const ok = !isError && r?.status === "done" && r?.is_terminal === true && !("grill" in (r ?? {})) && !("code" in (r ?? {}));
+    record("jobs_status: non-object grill dropped, job still done", ok, ok ? undefined : JSON.stringify(content));
+  }
+  {
+    const { isError, content } = await callTool(stubClient, "grill_ingest_resume", { token: "jsbadgrill", job_id: "job-1" });
+    const ok = !isError && content.job_id === "job-1" && content.events?.length === 2 && !("grill" in content);
+    record("ingest_resume: non-object grill dropped, stream still terminates", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 19. Wrong field types inside grill are coerced field by field, not rejected
+  //     wholesale, and non-string replaced_doc_ids entries are dropped rather
+  //     than String()-ed — String(null) would hand an agent the doc id "null".
+  {
+    const { isError, content } = await callTool(stubClient, "grill_jobs_status", { token: "jsbadfields", job_ids: ["job-1"] });
+    const r = content.results?.[0];
+    const ok = !isError && JSON.stringify(r?.grill) === JSON.stringify({ deduplicated: false, replaced_doc_ids: ["a", "b"] });
+    record("jobs_status coerces bad grill fields, drops non-string doc ids", ok, ok ? undefined : JSON.stringify(content));
   }
 }
 

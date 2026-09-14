@@ -150,7 +150,7 @@ var grillIngestTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(true),
 	},
-	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local), file_base64 (small), or url (the server fetches it). Returns job_id. Once done, doc_id equals job_id for grill_search — unless grill_jobs_status reports grill.deduplicated=true for the job, in which case use grill.doc_id. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop." + errorHandlingGuidance,
+	Description:  "Ingest a file into POMA Grill (context engine). Provide exactly one of file_path (large/local), file_base64 (small), or url (the server fetches it). Returns job_id. Once done, doc_id equals job_id for grill_search — except when grill_jobs_status reports a `grill` object for the job, in which case grill.doc_id is the document to filter on (it differs from job_id on a dedup hit). The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees rather than retrying in a tight loop." + errorHandlingGuidance,
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -162,7 +162,7 @@ var grillIngestSyncTool = &mcp.Tool{
 		DestructiveHint: boolPtr(false),
 		OpenWorldHint:   boolPtr(true),
 	},
-	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local), file_base64 (small), or url (the server fetches it). Returns job_id and status events. When the final status carries a `grill` object, grill.deduplicated=true means the same file bytes were already indexed under the same conversion build (nothing new was stored) and grill.doc_id is the id to use as doc_filter — it may differ from job_id on a dedup hit; grill.replaced_doc_ids lists documents evicted in favour of this job. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees." + errorHandlingGuidance,
+	Description:  "Ingest a file into POMA Grill; waits until terminal state. Provide exactly one of file_path (large/local), file_base64 (small), or url (the server fetches it). Returns job_id and status events. When the final status carries a `grill` object, ALWAYS use grill.doc_id as doc_filter rather than job_id — the two differ on a dedup hit. grill.deduplicated=true means the same file bytes were already indexed under the same conversion build, so nothing new was stored; grill.replaced_doc_ids lists documents evicted in favour of this job. The response includes a `scope` object identifying which project the document was ingested into — ALWAYS tell the user the project (scope.project_name / scope.hint). Backpressure: if the response has retryable=true (too_many_jobs — account at concurrent-job capacity), the document was NOT ingested; wait retry_after_seconds and retry the SAME call, and pause new ingests until capacity frees." + errorHandlingGuidance,
 	InputSchema:  grillIngestInputSchema,
 	OutputSchema: grillIngestOutputSchema,
 }
@@ -410,7 +410,7 @@ var grillSearchTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(true),
 	},
-	Description:  "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id: the job_id from grill_ingest, or grill.doc_id when the ingest or grill_jobs_status reported grill.deduplicated=true — the two differ on a dedup hit); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k. The response includes a `scope` object identifying which project was searched — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results." + errorHandlingGuidance,
+	Description:  "Search the POMA Grill context engine and return a context block for RAG. The doc_filter parameter restricts the search to a single document (its doc_id: the job_id from grill_ingest, or grill.doc_id whenever the ingest or grill_jobs_status returned a `grill` object — the two differ on a dedup hit, so prefer grill.doc_id when it is present); exclude_doc_ids omits the given doc_ids from results. Result count is bounded server-side by relevance and a token budget — there is no top_k. The response includes a `scope` object identifying which project was searched — ALWAYS tell the user the project (scope.project_name / scope.hint) when presenting results." + errorHandlingGuidance,
 	InputSchema:  grillSearchInputSchema,
 	OutputSchema: grillSearchOutputSchema,
 }
@@ -1213,7 +1213,7 @@ var grillJobsStatusTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(true),
 	},
-	Description:  "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming — reporting progress for jobs created by grill_ingest or grill_ingest_batch. pending_count/done_count/failed_count give a quick summary. When a result carries a `grill` object, grill.deduplicated=true means the same file bytes were already indexed under the same conversion build (nothing new was stored) and grill.doc_id is the id to use as doc_filter — it may differ from job_id on a dedup hit; grill.replaced_doc_ids lists documents evicted in favour of this job." + errorHandlingGuidance,
+	Description:  "Get current status for one or more POMA Grill jobs (up to 50). Returns a JSON snapshot per job — no streaming — reporting progress for jobs created by grill_ingest or grill_ingest_batch. pending_count/done_count/failed_count give a quick summary. When a result carries a `grill` object, ALWAYS use grill.doc_id as doc_filter rather than job_id — the two differ on a dedup hit. grill.deduplicated=true means the same file bytes were already indexed under the same conversion build, so nothing new was stored; grill.replaced_doc_ids lists documents evicted in favour of this job." + errorHandlingGuidance,
 	InputSchema:  grillJobsStatusInputSchema,
 	OutputSchema: grillJobsStatusOutputSchema,
 }
