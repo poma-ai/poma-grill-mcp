@@ -6,6 +6,7 @@ import {
   getToken,
   grillErrorFields,
   interpretAuthError,
+  interpretProjectConflict,
   interpretTooManyJobs,
   makeGrillError,
   projectIDSource,
@@ -98,6 +99,12 @@ export async function grillIngestBatch(
             results[i] = { file_path: fp, ...grillErrorFields(ge), quota_exceed: true };
             continue;
           }
+          const conflict = interpretProjectConflict(res.status, res.body, "grill ingest");
+          if (conflict) {
+            const ge = makeGrillError(ErrorCode.InvalidInput, conflict.message);
+            results[i] = { file_path: fp, ...grillErrorFields(ge) };
+            continue;
+          }
           if (res.status === 403) {
             // interpretAuthError returned undefined — legacy quota/capacity 403 (older API), not auth.
             const bodyText = new TextDecoder("utf-8").decode(res.body);
@@ -158,7 +165,7 @@ export async function grillIngestBatch(
     );
   }
 
-  const { source } = projectIDSource(args.project_id);
+  const { source } = projectIDSource(token, args.project_id);
   const scope = await resolveScope(client, token, projectID, "", source);
   const scopeOut = scopeFields(scope);
   return successResult({

@@ -115,6 +115,13 @@ func grillListProjects(c *client.Client, product string) ([]byte, int, error) {
 	return c.Do(http.MethodGet, p, nil, nil)
 }
 
+// grillProjectInfo calls GET /projects/info, which returns the single project a
+// project API key is bound to (same object shape as one /projects entry). The
+// gateway answers 401 for any other credential.
+func grillProjectInfo(c *client.Client) ([]byte, int, error) {
+	return c.Do(http.MethodGet, "/projects/info", nil, nil)
+}
+
 // grillSanitizeFilename mirrors the sanitizeContentDispositionFilename logic in poma-cli.
 // Placeholder: remove when grillIngestData is replaced by the client method (which handles this internally).
 func grillSanitizeFilename(name string) string {

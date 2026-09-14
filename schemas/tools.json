@@ -112,7 +112,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -211,7 +211,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -290,7 +290,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -383,7 +383,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -550,7 +550,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -630,7 +630,7 @@
                 "type": "string"
               },
               "source": {
-                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, or account default).",
+                "description": "How the project was determined (project_id argument, POMA_PROJECT_ID env var, project API key, or account default).",
                 "type": "string"
               }
             },
@@ -650,7 +650,7 @@
         "readOnlyHint": true,
         "title": "List Projects"
       },
-      "description": "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
+      "description": "List your accessible projects. Returns project IDs, names, product types, and protection status, mapping a project name to the project_id used by other Grill tools. With a project API key (poma_proj_…) the gateway refuses the account listing; the tool then returns just the one project the key is bound to. On any error, `code` classifies it. Only retry when `retryable` is true (`too_many_jobs`, transient `transport_error`/`stream_error`/5xx `upstream_error`) after `retry_after_seconds`. Terminal codes (`auth_expired`, `payment_required`, `forbidden`, `project_protected`, `invalid_input`, `parse_error`, `job_failed`) must NOT be retried — fix the cause or abort.",
       "inputSchema": {
         "properties": {
           "product": {
