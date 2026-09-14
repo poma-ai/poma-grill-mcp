@@ -347,6 +347,43 @@ func MCPRequestBodyBytes() int64 {
 	return limit
 }
 
+// MCPMaxLineLength returns the byte limit for a single inbound MCP JSON-RPC
+// frame over stdio, in the form expected by mcp.IOTransport.MaxLineLength
+// (0 = SDK default of 16 MiB, negative = uncapped).
+//
+// go-sdk v1.8.0 started bounding stdio frames at DefaultMaxLineLength (16 MiB);
+// v1.7.0 buffered a frame of any size. Overrunning the cap is fatal rather than
+// per-request: the decoder errors, its read loop exits and the session ends, so
+// the offending request gets no JSON-RPC error and neither does any request after
+// it. At the SDK default that kills the session for any file_base64 above ~12 MiB
+// — a size ingestMaxBytes (512 MiB by default) explicitly permits — so the frame
+// limit is sized off the ingest ceiling the tool actually enforces.
+//
+// Deliberately not GRILL_MCP_MAX_BODY_BYTES. That knob is sized for the HTTP path,
+// where a remote body is re-buffered several times over before the bytes reach the
+// Grill API; a local pipe does not pay that cost. Binding the two would also make
+// an ingest-file knob a fatal bound on calls that carry no file at all.
+//
+// The floor is what keeps that from happening here: lowering GRILL_INGEST_MAX_BYTES
+// caps how large a file may be, not how large an unrelated grill_search may be.
+//
+// This bounds the protocol frame, not the allocation. drainReader materializes a
+// whole line before the SDK's limiter sees a byte (see NewDrainingStdio), so peak
+// memory still tracks the frame the client sends, not this limit.
+func MCPMaxLineLength() int {
+	n := base64BodyBytes(ingestMaxBytes())
+	if n < 0 {
+		return -1 // ingest unlimited, or so large the scaled value overflowed: no cap
+	}
+	if n < defaultMCPMaxBodyBytes {
+		n = defaultMCPMaxBodyBytes // never let an ingest cap bound unrelated calls
+	}
+	if n > math.MaxInt {
+		return math.MaxInt // unrepresentable as an int here; keep a cap, do not fail open
+	}
+	return int(n)
+}
+
 // base64BodyBytes scales an ingest byte limit up by the base64 4/3 expansion and
 // adds slack for the JSON-RPC envelope, giving the body size that carries a
 // file of that limit. It returns -1 when the limit is unset or so large that the

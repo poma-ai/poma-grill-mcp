@@ -358,3 +358,91 @@ func (e *errAfterLine) Read(p []byte) (int, error) {
 	n := copy(p, e.line)
 	return n, nil
 }
+
+// TestStdioFrameLimitAdmitsIngestSizedFrame is the regression for the go-sdk
+// v1.8.0 upgrade: v1.8.0 bounds a single inbound JSON-RPC frame at 16 MiB by
+// default, and overrunning it is fatal — the decoder errors, its read loop
+// exits, and the session ends with no response for the offending request or any
+// request after it. A file_base64 that grill_ingest itself accepts must not trip
+// that, so the transport is configured from MCPMaxLineLength.
+//
+// This asserts the wiring, not just the number: it builds the transport the way
+// main.go does, so dropping MaxLineLength there fails this test.
+func TestStdioFrameLimitAdmitsIngestSizedFrame(t *testing.T) {
+	tests := []struct {
+		name      string
+		ingestMax string
+		padBytes  int
+	}{
+		// ~20 MiB frame: over the SDK's 16 MiB default, under the default
+		// ingest ceiling, so it must be served rather than kill the session.
+		{"default ingest ceiling admits a 20 MiB frame", "", 20 << 20},
+		// A small ingest cap bounds how large a *file* may be, not how large an
+		// unrelated call may be: the floor keeps this frame servable.
+		{"a small ingest cap does not bound an unrelated call", "100000", 1 << 20},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GRILL_INGEST_MAX_BYTES", tt.ingestMax)
+
+			// A large notification, then a request whose response proves the
+			// session survived the big frame.
+			big, err := json.Marshal(map[string]any{
+				"jsonrpc": "2.0", "method": "notifications/progress",
+				"params": map[string]any{"progressToken": "t", "message": strings.Repeat("A", tt.padBytes)},
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			// Handshake first, so the trailing tools/list returns a real result
+			// rather than an "invalid during session initialization" error — the
+			// point is that the session still SERVES requests after the big frame,
+			// not merely that it answers them.
+			input := strings.Join([]string{
+				`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`,
+				`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+				string(big),
+				`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+				"",
+			}, "\n")
+
+			var out syncBuffer
+			in, w := NewDrainingStdio(strings.NewReader(input), &out)
+			server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0"}, nil)
+			mcp.AddTool(server, &mcp.Tool{Name: "noop"},
+				func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+					return nil, nil, nil
+				})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			// Exactly how main.go builds it.
+			transport := &mcp.IOTransport{Reader: in, Writer: w, MaxLineLength: MCPMaxLineLength()}
+			if err := server.Run(ctx, transport); err != nil {
+				t.Fatalf("session died on a %d-byte frame (MaxLineLength=%d): %v",
+					len(big), MCPMaxLineLength(), err)
+			}
+			var served bool
+			for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
+				var resp struct {
+					ID     json.RawMessage `json:"id"`
+					Result json.RawMessage `json:"result"`
+					Error  json.RawMessage `json:"error"`
+				}
+				if line == "" || json.Unmarshal([]byte(line), &resp) != nil {
+					continue
+				}
+				if string(resp.ID) != "2" {
+					continue
+				}
+				if len(resp.Error) > 0 {
+					t.Fatalf("tools/list after the large frame errored: %s", line)
+				}
+				served = len(resp.Result) > 0
+			}
+			if !served {
+				t.Errorf("no tools/list result after the large frame; output was:\n%.500s", out.String())
+			}
+		})
+	}
+}

@@ -115,7 +115,11 @@ func runStdioMcpServer(server *mcp.Server) {
 	// The reader and writer are paired so that end of input does not cancel
 	// requests the server has already read; see tools.NewDrainingStdio.
 	in, out := tools.NewDrainingStdio(reader, os.Stdout)
-	transport := &mcp.IOTransport{Reader: in, Writer: out}
+	// MaxLineLength: go-sdk v1.8.0 caps a single inbound JSON-RPC frame at 16 MiB
+	// by default and ends the whole session when one overruns it — v1.7.0 had no
+	// cap. Size it off GRILL_INGEST_MAX_BYTES instead, so the transport does not
+	// kill the session for a file_base64 that grill_ingest itself would accept.
+	transport := &mcp.IOTransport{Reader: in, Writer: out, MaxLineLength: tools.MCPMaxLineLength()}
 	if err := server.Run(context.Background(), transport); err != nil {
 		slog.Error("server error", "err", err)
 		os.Exit(1)
@@ -164,8 +168,9 @@ func runHttpMcpServer(server *mcp.Server) {
 		func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{
 			Stateless: true,
-			// go-sdk v1.7.0 caps request bodies at 4 MiB by default, which is too small
-			// for a base64 file inside a JSON-RPC message.
+			// go-sdk caps request bodies at DefaultMaxRequestBodyBytes (4 MiB) when
+			// this is zero, which is too small for a base64 file inside a JSON-RPC
+			// message.
 			MaxRequestBodyBytes: tools.MCPRequestBodyBytes(),
 		},
 	)
@@ -200,8 +205,9 @@ func runHttpMcpServer(server *mcp.Server) {
 	// Cross-origin protection covers the whole mux, not just the MCP path.
 	//
 	// go-sdk v1.7.0 stopped applying a default CrossOriginProtection when the option
-	// is nil (v1.5.0 applied one to the MCP handler), so it has to be wrapped here
-	// anyway — and at the mux it also covers /ingest-upload, which the SDK never
+	// is nil (v1.5.0 applied one to the MCP handler) and v1.8.0 removed the
+	// enableoriginverification escape hatch that restored it, so it has to be wrapped
+	// here anyway — and at the mux it also covers /ingest-upload, which the SDK never
 	// protected. That endpoint accepts any content type and falls back to the
 	// server's POMA_API_KEY, so without this a page in the operator's browser could
 	// POST documents into their project on their key. Safe methods are always

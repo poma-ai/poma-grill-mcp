@@ -190,6 +190,7 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 - **Security:** optional **`GRILL_INGEST_ALLOWED_PREFIX`**: if set, `file_path` must resolve (after symlink evaluation) under that directory. Non-regular files are rejected.
 - **`GRILL_INGEST_MAX_BYTES`**: max payload size in bytes. Unset defaults to 512 MiB. Set to **`0`** for no limit (use with care).
 - **`GRILL_MCP_MAX_BODY_BYTES`** (HTTP mode): max size of a single MCP JSON-RPC request body. Unset defaults to **16 MiB** (~12 MiB of file once base64 expansion is accounted for); a smaller `GRILL_INGEST_MAX_BYTES` lowers it to match. Set to **`0`** for no limit (use with care). This bound exists because a base64 file inside a JSON-RPC message is buffered several times before it reaches the Grill API — for larger files use `file_path` (stdio) or `POST /ingest-upload` (HTTP), which do not pay that cost. Exceeding it returns a plain-text **`413`** from the transport, not a `GrillError` JSON envelope.
+- **stdio frame limit**: over stdio there is no separate knob — the max size of a single MCP JSON-RPC frame is derived from `GRILL_INGEST_MAX_BYTES` (scaled for base64 expansion, never below 16 MiB, uncapped when `GRILL_INGEST_MAX_BYTES=0`). Unlike HTTP's `413`, overrunning it is **fatal**: the transport ends the session, so the offending request and every request after it go unanswered.
 
 **Very large files without MCP**
 
