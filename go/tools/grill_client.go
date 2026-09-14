@@ -137,17 +137,19 @@ func grillSanitizeFilename(name string) string {
 
 // grillSearchRequest is the JSON body for POST /grill/search.
 type grillSearchRequest struct {
-	Query            string   `json:"query"`
-	ExcludeDocIDs    []string `json:"exclude_doc_ids,omitempty"`
-	ReturnAssets     bool     `json:"return_assets,omitempty"`
-	ReturnPageImages bool     `json:"return_page_images,omitempty"`
+	Query            string           `json:"query"`
+	ExcludeDocIDs    []string         `json:"exclude_doc_ids,omitempty"`
+	AttributeFilters []map[string]any `json:"attribute_filters,omitempty"`
+	ReturnAssets     bool             `json:"return_assets,omitempty"`
+	ReturnPageImages bool             `json:"return_page_images,omitempty"`
 }
 
 // grillSearchInDocRequest is the JSON body for POST /grill/searchInDoc.
 type grillSearchInDocRequest struct {
-	Query            string   `json:"query"`
-	DocFilter        string   `json:"doc_filter"`
-	ExcludeDocIDs    []string `json:"exclude_doc_ids,omitempty"`
-	ReturnAssets     bool     `json:"return_assets,omitempty"`
-	ReturnPageImages bool     `json:"return_page_images,omitempty"`
+	Query            string           `json:"query"`
+	DocFilter        string           `json:"doc_filter"`
+	ExcludeDocIDs    []string         `json:"exclude_doc_ids,omitempty"`
+	AttributeFilters []map[string]any `json:"attribute_filters,omitempty"`
+	ReturnAssets     bool             `json:"return_assets,omitempty"`
+	ReturnPageImages bool             `json:"return_page_images,omitempty"`
 }
