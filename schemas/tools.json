@@ -609,6 +609,30 @@
           "token": {
             "description": "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
             "type": "string"
+          },
+          "attribute_filters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "attr": {
+                  "type": "string",
+                  "description": "Attribute name as set at ingest."
+                },
+                "op": {
+                  "type": "string",
+                  "description": "eq, ne, in, nin, lt, lte, gt, gte, glob, iglob, contains, contains_any, any_lt, any_gt, has_all_tokens, has_any_tokens. Which are available depends on the attribute's type; an operator the type does not offer returns an error naming the ones it does."
+                },
+                "value": {
+                  "description": "Operand. A list for in/nin/contains_any; for has_all_tokens/has_any_tokens a plain search string."
+                }
+              },
+              "required": [
+                "attr",
+                "op"
+              ]
+            },
+            "description": "Filter results by typed attributes set at ingest. Clauses combine with AND. A filter naming an attribute the project has never used matches NOTHING rather than being ignored. Text attributes stored as encrypted_text match on exact tokens only — no stemming, no partial words."
           }
         },
         "required": [

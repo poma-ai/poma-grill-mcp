@@ -13,10 +13,17 @@ import {
 import { GrillClient } from "../client/grillClient.js";
 import { resolveScope, scopeFields } from "../scope.js";
 
+interface AttributeFilter {
+  attr: string;
+  op: string;
+  value?: unknown;
+}
+
 interface SearchRequest {
   query: string;
   doc_filter?: string;
   exclude_doc_ids?: string[];
+  attribute_filters?: AttributeFilter[];
   return_assets?: boolean;
   return_page_images?: boolean;
 }
@@ -26,6 +33,13 @@ function buildBody(args: Record<string, unknown>, withDocFilter: boolean): Searc
   if (withDocFilter) body.doc_filter = String(args.doc_filter);
   if (Array.isArray(args.exclude_doc_ids) && args.exclude_doc_ids.length > 0) {
     body.exclude_doc_ids = args.exclude_doc_ids.map(String);
+  }
+  // Typed-attribute filters, passed through verbatim: the operator set and the
+  // per-type rules are grill's contract, and a copy here would go stale. An
+  // EMPTY array is dropped rather than sent — the server would read it as
+  // "filter by nothing", which is the silent-widening shape this replaces.
+  if (Array.isArray(args.attribute_filters) && args.attribute_filters.length > 0) {
+    body.attribute_filters = args.attribute_filters as AttributeFilter[];
   }
   if (args.return_assets === true) body.return_assets = true;
   if (args.return_page_images === true) body.return_page_images = true;

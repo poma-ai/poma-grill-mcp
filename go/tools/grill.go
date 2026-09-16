@@ -373,6 +373,19 @@ var grillSearchInputSchema = &jsonschema.Schema{
 			Items:       &jsonschema.Schema{Type: "string"},
 			Description: "Doc ids to exclude from results. Useful in agent loops to avoid re-citing docs already shown. Max 100.",
 		},
+		"attribute_filters": {
+			Type: "array",
+			Items: &jsonschema.Schema{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"attr":  {Type: "string", Description: "Attribute name as set at ingest."},
+					"op":    {Type: "string", Description: "eq, ne, in, nin, lt, lte, gt, gte, glob, iglob, contains, contains_any, any_lt, any_gt, has_all_tokens, has_any_tokens. Which are available depends on the attribute's type; an operator the type does not offer returns an error naming the ones it does."},
+					"value": {Description: "Operand. A list for in/nin/contains_any; for has_all_tokens/has_any_tokens a plain search string."},
+				},
+				Required: []string{"attr", "op"},
+			},
+			Description: "Filter results by typed attributes set at ingest. Clauses combine with AND. A filter naming an attribute the project has never used matches NOTHING rather than being ignored. Text attributes stored as encrypted_text match on exact tokens only — no stemming, no partial words.",
+		},
 		"return_assets": {
 			Type:        "boolean",
 			Description: "Return the cited documents' figures/tables in the `assets` output field (keyed by doc_id; images are base64 data URIs).",
@@ -416,13 +429,17 @@ var grillSearchTool = &mcp.Tool{
 }
 
 type GrillSearchInput struct {
-	Query            string   `json:"query"`
-	DocFilter        string   `json:"doc_filter,omitempty"`
-	ExcludeDocIDs    []string `json:"exclude_doc_ids,omitempty"`
-	ReturnAssets     bool     `json:"return_assets,omitempty"`
-	ReturnPageImages bool     `json:"return_page_images,omitempty"`
-	Token            string   `json:"token,omitempty"`
-	ProjectID        string   `json:"project_id,omitempty"`
+	Query         string   `json:"query"`
+	DocFilter     string   `json:"doc_filter,omitempty"`
+	ExcludeDocIDs []string `json:"exclude_doc_ids,omitempty"`
+	// Passed through verbatim. Not modelled as a concrete struct because the
+	// operator set and the per-type rules are grill's contract; a copy here
+	// would be a second source of truth that goes stale.
+	AttributeFilters []map[string]any `json:"attribute_filters,omitempty"`
+	ReturnAssets     bool             `json:"return_assets,omitempty"`
+	ReturnPageImages bool             `json:"return_page_images,omitempty"`
+	Token            string           `json:"token,omitempty"`
+	ProjectID        string           `json:"project_id,omitempty"`
 }
 
 type GrillSearchOutput struct {
@@ -460,6 +477,7 @@ func GrillSearch(ctx context.Context, _ *mcp.CallToolRequest, input GrillSearchI
 			Query:            input.Query,
 			DocFilter:        input.DocFilter,
 			ExcludeDocIDs:    input.ExcludeDocIDs,
+			AttributeFilters: input.AttributeFilters,
 			ReturnAssets:     input.ReturnAssets,
 			ReturnPageImages: input.ReturnPageImages,
 		}, projectID)
@@ -467,6 +485,7 @@ func GrillSearch(ctx context.Context, _ *mcp.CallToolRequest, input GrillSearchI
 		respBody, st, err = grillSearch(c, grillSearchRequest{
 			Query:            input.Query,
 			ExcludeDocIDs:    input.ExcludeDocIDs,
+			AttributeFilters: input.AttributeFilters,
 			ReturnAssets:     input.ReturnAssets,
 			ReturnPageImages: input.ReturnPageImages,
 		}, projectID)
