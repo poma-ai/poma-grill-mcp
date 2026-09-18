@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "poma-grill",
+  "name": "poma-grill-mcp",
   "version": "0.5.0",
   "description": "POMA Grill — ingest documents into the Grill context engine and run semantic search over them from any agent.",
   "author": {

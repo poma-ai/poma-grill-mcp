@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
-    "poma-grill": {
+    "poma-grill-mcp": {
       "type": "streamable-http",
       "url": "https://mcp.poma-ai.com/grill"
     }

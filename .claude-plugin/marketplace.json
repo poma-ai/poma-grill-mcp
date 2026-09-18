@@ -12,7 +12,7 @@
   },
   "plugins": [
     {
-      "name": "poma-grill",
+      "name": "poma-grill-mcp",
       "displayName": "POMA Grill",
       "source": "./plugins/poma-grill",
       "description": "Ingest documents into the POMA Grill context engine and run semantic search over them.",

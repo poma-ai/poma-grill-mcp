@@ -1,5 +1,5 @@
 {
-  "name": "poma-grill",
+  "name": "poma-grill-mcp",
   "description": "Ingest documents into the POMA Grill context engine and run semantic search over them.",
   "version": "0.5.0",
   "author": {

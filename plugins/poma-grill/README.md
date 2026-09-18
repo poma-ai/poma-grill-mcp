@@ -39,7 +39,7 @@ are in [MANUAL.md](MANUAL.md) — the short version is
 
 ```json
 {
-  "poma-grill": {
+  "poma-grill-mcp": {
     "type": "streamable-http",
     "url": "https://mcp.poma-ai.com/grill"
   }
@@ -55,7 +55,7 @@ Prefer an API key over OAuth? Add headers:
 
 ```json
 {
-  "poma-grill": {
+  "poma-grill-mcp": {
     "type": "streamable-http",
     "url": "https://mcp.poma-ai.com/grill",
     "headers": { "x-api-key": "your-api-key" }
@@ -70,7 +70,7 @@ local server. Swap the entry for the stdio form:
 
 ```json
 {
-  "poma-grill": {
+  "poma-grill-mcp": {
     "type": "stdio",
     "command": "poma-grill-mcp",
     "args": ["-input", "-"],

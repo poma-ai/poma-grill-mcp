@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "poma-grill": {
+    "poma-grill-mcp": {
       "type": "http",
       "url": "https://mcp.poma-ai.com/grill"
     }

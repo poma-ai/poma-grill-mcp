@@ -135,7 +135,7 @@ Add headers to `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "poma-grill": {
+    "poma-grill-mcp": {
       "type": "http",
       "url": "https://mcp.poma-ai.com/grill",
       "headers": { "x-api-key": "your-api-key" }
@@ -168,7 +168,7 @@ Add to `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
-    "poma-grill": {
+    "poma-grill-mcp": {
       "url": "https://mcp.poma-ai.com/grill"
     }
   }
@@ -181,7 +181,7 @@ instead of OAuth:
 ```json
 {
   "mcpServers": {
-    "poma-grill": {
+    "poma-grill-mcp": {
       "url": "https://mcp.poma-ai.com/grill",
       "headers": { "x-api-key": "your-api-key" }
     }
@@ -233,7 +233,7 @@ run the binary yourself and point the client at stdio. Claude Code, in `.mcp.jso
 ```json
 {
   "mcpServers": {
-    "poma-grill": {
+    "poma-grill-mcp": {
       "command": "poma-grill-mcp",
       "args": ["-input", "-"],
       "env": { "POMA_API_KEY": "your-api-key" }
