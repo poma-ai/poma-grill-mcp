@@ -44,7 +44,7 @@ Paste this into your MCP config — replace the path and key.
 ```json
 {
   "mcpServers": {
-    "poma": {
+    "poma-grill-mcp": {
       "command": "/full/path/to/poma-grill-mcp",
       "args": ["-input", "-"],
       "env": {
@@ -59,7 +59,7 @@ Paste this into your MCP config — replace the path and key.
 ```json
 {
   "mcpServers": {
-    "poma": {
+    "poma-grill-mcp": {
       "command": "node",
       "args": ["/full/path/to/poma-grill-mcp/node/dist/index.js", "-input", "-"],
       "env": {
@@ -80,7 +80,7 @@ Auth is **OAuth 2.0**: the first time your client connects, it gets a `401` with
 ```json
 {
   "mcpServers": {
-    "poma": {
+    "poma-grill-mcp": {
       "type": "http",
       "url": "https://mcp.poma-ai.com/grill"
     }
@@ -92,7 +92,7 @@ Auth is **OAuth 2.0**: the first time your client connects, it gets a `401` with
 ```json
 {
   "mcpServers": {
-    "poma": {
+    "poma-grill-mcp": {
       "url": "https://mcp.poma-ai.com/grill"
     }
   }
