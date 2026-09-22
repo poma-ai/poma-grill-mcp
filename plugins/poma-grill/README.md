@@ -99,7 +99,7 @@ endpoint, ingest remote documents by `url` or small ones by `file_base64` instea
 
 ## Versioning
 
-`plugin.json` tracks the MCP server version it documents (currently `0.5.0`). When the
+`plugin.json` tracks the MCP server version it documents (currently `0.6.0`). When the
 tool surface in [`schemas/tools.json`](../../schemas/tools.json) changes, update the
 skills and bump `version` here.
 
