@@ -21,7 +21,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w" \
     -trimpath \
-    -o poma-grill-mcp .
+    -o poma-grill-mcp ./cmd/poma-grill-mcp
 
 FROM cgr.dev/chainguard/static:latest AS runner
 

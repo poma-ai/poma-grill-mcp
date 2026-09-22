@@ -1,12 +1,12 @@
 # GoReleaser — https://goreleaser.com
 #
-# Homebrew tap (poma-ai/homebrew-poma):
-#   - PAT with repo scope: HOMEBREW_TAP_GITHUB_TOKEN (see .github/workflows/release.yaml)
+# Homebrew tap (poma-ai/homebrew-poma-grill-mcp, formula poma-grill-mcp):
+#   - PAT with repo scope: HOMEBREW_TAP_GITHUB_TOKEN (see .github/workflows/release.yml)
 #   - Tag and run: goreleaser release --clean
 #
-# Uses `brews` (Formula under Formula/) so `brew install poma` works without --cask.
-# GoReleaser deprecates this in favor of homebrew_casks for prebuilt binaries; expect a
-# deprecation warning until v3. One-time: remove Casks/poma.rb from the tap if migrating.
+# Uses `brews` (Formula under Formula/) so `brew install poma-ai/poma-grill-mcp/poma-grill-mcp`
+# works without --cask. GoReleaser deprecates this in favor of homebrew_casks for prebuilt
+# binaries; expect a deprecation warning until v3.
 
 version: 2
 
@@ -19,7 +19,7 @@ before:
 
 builds:
   - id: poma-grill-mcp
-    main: .
+    main: ./cmd/poma-grill-mcp
     binary: poma-grill-mcp
     env:
       - CGO_ENABLED=0

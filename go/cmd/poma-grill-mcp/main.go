@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/poma-ai/poma-grill-mcp/oauth"
-	"github.com/poma-ai/poma-grill-mcp/tools"
+	"github.com/poma-ai/poma-grill-mcp/go/oauth"
+	"github.com/poma-ai/poma-grill-mcp/go/tools"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=<tag>".
