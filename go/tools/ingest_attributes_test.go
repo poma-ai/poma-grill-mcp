@@ -58,14 +58,14 @@ func startIngestStub(t *testing.T) *ingestCapture {
 }
 
 func TestEncodeIngestAttributesHeaderValues(t *testing.T) {
-	attrs := rawMap(t, `{"year":2024,"region":"emea","tags":["a","b"],"big":9007199254740993,"ok":true,"gone":null,"city":"Zürich 🍫"}`)
+	attrs := rawMap(t, `{"notes":"private","year":2024,"region":"emea","tags":["a","b"],"big":9007199254740993,"ok":true,"city":"Zürich 🍫"}`)
 	schema := rawMap(t, `{"notes":{"type":"encrypted_text"}}`)
 	a, s, err := encodeIngestAttributes(attrs, schema)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Keys sorted, compact, non-ASCII escaped, big int preserved exactly.
-	want := `{"big":9007199254740993,"city":"Z` + "\\u00fcrich \\ud83c\\udf6b" + `","gone":null,"ok":true,"region":"emea","tags":["a","b"],"year":2024}`
+	want := `{"big":9007199254740993,"city":"Z` + "\\u00fcrich \\ud83c\\udf6b" + `","notes":"private","ok":true,"region":"emea","tags":["a","b"],"year":2024}`
 	if a != want {
 		t.Errorf("X-Attributes = %s\nwant           %s", a, want)
 	}
@@ -102,12 +102,15 @@ func TestEncodeIngestAttributesValidation(t *testing.T) {
 		{"object value", rawMap(t, `{"x":{"a":1}}`), nil, `attribute "x": value must be`},
 		{"nested array", rawMap(t, `{"x":[[1]]}`), nil, `attribute "x": value must be`},
 		{"null in array", rawMap(t, `{"x":[null]}`), nil, `attribute "x": value must be`},
+		{"orphan declaration", rawMap(t, `{"region":"emea"}`), rawMap(t, `{"notes":{"type":"encrypted_text"}}`), `attribute_schema declares "notes", but attributes has no value for it`},
+		{"schema without attributes", nil, rawMap(t, `{"notes":{"type":"encrypted_text"}}`), `attribute_schema declares "notes", but attributes has no value for it`},
+		{"top-level null", rawMap(t, `{"gone":null}`), nil, `attribute "gone": value must be`},
 		{"too many names", many, nil, "at most 64"},
 		{"attributes over cap", rawMap(t, `{"x":"`+long+`"}`), nil, "capped at 2048"},
 		{"schema bad name", nil, rawMap(t, `{"Notes":{"type":"encrypted_text"}}`), `attribute_schema name "Notes"`},
 		{"schema missing type", nil, rawMap(t, `{"notes":{}}`), `attribute_schema "notes" must be an object`},
 		{"schema not object", nil, rawMap(t, `{"notes":"encrypted_text"}`), `attribute_schema "notes" must be an object`},
-		{"schema over cap", nil, rawMap(t, `{"notes":{"type":"`+long+`"}}`), "X-Attribute-Schema header is capped at 2048"},
+		{"schema over cap", rawMap(t, `{"notes":"x"}`), rawMap(t, `{"notes":{"type":"`+long+`"}}`), "X-Attribute-Schema header is capped at 2048"},
 	}
 	if len(many) != attributesMaxNames+1 {
 		t.Fatalf("test setup: %d names", len(many))
@@ -148,7 +151,7 @@ func TestGrillIngestSendsAttributeHeaders(t *testing.T) {
 		Token:           "tok",
 		URL:             "https://example.com/doc.pdf",
 		Labels:          map[string]string{"team": "eng"},
-		Attributes:      rawMap(t, `{"region":"emea","year":2024}`),
+		Attributes:      rawMap(t, `{"notes":"private","region":"emea","year":2024}`),
 		AttributeSchema: rawMap(t, `{"notes":{"type":"encrypted_text"}}`),
 	})
 	if err != nil || out.Error != "" {
@@ -159,7 +162,7 @@ func TestGrillIngestSendsAttributeHeaders(t *testing.T) {
 		t.Fatalf("requests = %d, want 1", len(reqs))
 	}
 	h := reqs[0]
-	if got := h.Get("X-Attributes"); got != `{"region":"emea","year":2024}` {
+	if got := h.Get("X-Attributes"); got != `{"notes":"private","region":"emea","year":2024}` {
 		t.Errorf("X-Attributes = %q", got)
 	}
 	if got := h.Get("X-Attribute-Schema"); got != `{"notes":{"type":"encrypted_text"}}` {
@@ -215,7 +218,7 @@ func TestGrillIngestBatchAttachesAttributesToEveryFile(t *testing.T) {
 	_, out, err := GrillIngestBatch(context.Background(), nil, GrillIngestBatchInput{
 		Token:           "tok",
 		FilePaths:       paths,
-		Attributes:      rawMap(t, `{"batch":"q3","year":2024}`),
+		Attributes:      rawMap(t, `{"batch":"q3","notes":"private","year":2024}`),
 		AttributeSchema: rawMap(t, `{"notes":{"type":"encrypted_text"}}`),
 	})
 	if err != nil || out.Error != "" {
@@ -226,7 +229,7 @@ func TestGrillIngestBatchAttachesAttributesToEveryFile(t *testing.T) {
 		t.Fatalf("requests = %d submitted = %d, want 3", len(reqs), out.SubmittedCount)
 	}
 	for i, h := range reqs {
-		if got := h.Get("X-Attributes"); got != `{"batch":"q3","year":2024}` {
+		if got := h.Get("X-Attributes"); got != `{"batch":"q3","notes":"private","year":2024}` {
 			t.Errorf("request %d X-Attributes = %q", i, got)
 		}
 		if got := h.Get("X-Attribute-Schema"); got != `{"notes":{"type":"encrypted_text"}}` {

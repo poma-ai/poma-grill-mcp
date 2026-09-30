@@ -735,11 +735,14 @@ async function errorCodeTests(
       token: "scope1",
       url: "https://example.com/doc.pdf",
       labels: { team: "eng" },
-      attributes: { year: 2024, region: "emea", city: "Z\u00fcrich", tags: ["a", "b"], gone: null },
+      attributes: { year: 2024, region: "emea", city: "Z\u00fcrich", tags: ["a", "b"], notes: "private", ["__proto__"]: "p" },
       attribute_schema: { notes: { type: "encrypted_text" } },
     });
     const h = ingest.attrHeaders[0];
-    const wantAttrs = '{"city":"Z\\u00fcrich","gone":null,"region":"emea","tags":["a","b"],"year":2024}';
+    // __proto__ is a legal name (it matches the regex) and must be sent, not
+    // swallowed as a prototype assignment. The literal key in a JSON-RPC
+    // payload arrives as an own property after JSON.parse.
+    const wantAttrs = '{"__proto__":"p","city":"Z\\u00fcrich","notes":"private","region":"emea","tags":["a","b"],"year":2024}';
     const ok =
       !isError &&
       ingest.attrHeaders.length === 1 &&
@@ -747,6 +750,19 @@ async function errorCodeTests(
       h?.schema === '{"notes":{"type":"encrypted_text"}}' &&
       ingest.labels === "team:eng";
     record("ingest attributes → X-Attributes/X-Attribute-Schema + labels", ok, ok ? undefined : `${JSON.stringify(h)} labels=${ingest.labels} ${JSON.stringify(content)}`);
+  }
+  // 13d2. __proto__ survives in attribute_schema too (null-prototype object there as well).
+  {
+    ingest.attrHeaders.length = 0;
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      attributes: { ["__proto__"]: "p" },
+      attribute_schema: { ["__proto__"]: { type: "encrypted_text" } },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && h?.attributes === '{"__proto__":"p"}' && h?.schema === '{"__proto__":{"type":"encrypted_text"}}';
+    record("__proto__ sent in attributes and attribute_schema", ok, ok ? undefined : `${JSON.stringify(h)} ${JSON.stringify(content)}`);
   }
   // 13e. No attributes → neither header is sent.
   {
@@ -760,12 +776,31 @@ async function errorCodeTests(
   {
     const cases: { name: string; tool: string; args: Record<string, unknown>; want: string }[] = [
       { name: "uppercase name", tool: "grill_ingest", args: { attributes: { DocYear: 2024 } }, want: 'attribute name "DocYear" must match' },
+      { name: "top-level null", tool: "grill_ingest", args: { attributes: { gone: null } }, want: 'attribute "gone": value must be' },
       { name: "object value", tool: "grill_ingest_sync", args: { attributes: { x: { a: 1 } } }, want: 'attribute "x": value must be' },
       { name: "over cap", tool: "grill_ingest", args: { attributes: { x: "y".repeat(2048) } }, want: "capped at 2048" },
       // 400 × ü is 400 characters of input but 2400 once escaped: the cap counts the header.
       { name: "cap counts escaped length", tool: "grill_ingest", args: { attributes: { x: "\u00fc".repeat(400) } }, want: "capped at 2048" },
       { name: "too many names", tool: "grill_ingest", args: { attributes: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`a${i}`, 1])) }, want: "at most 64" },
       { name: "schema bad name", tool: "grill_ingest", args: { attribute_schema: { Notes: { type: "encrypted_text" } } }, want: 'attribute_schema name "Notes"' },
+      {
+        name: "orphan declaration",
+        tool: "grill_ingest",
+        args: { attributes: { region: "emea" }, attribute_schema: { notes: { type: "encrypted_text" } } },
+        want: 'attribute_schema declares "notes", but attributes has no value for it',
+      },
+      {
+        name: "schema without attributes",
+        tool: "grill_ingest_sync",
+        args: { attribute_schema: { notes: { type: "encrypted_text" } } },
+        want: 'attribute_schema declares "notes", but attributes has no value for it',
+      },
+      {
+        name: "__proto__ orphan declaration",
+        tool: "grill_ingest",
+        args: { attributes: { region: "emea" }, attribute_schema: { ["__proto__"]: { type: "encrypted_text" } } },
+        want: 'attribute_schema declares "__proto__"',
+      },
       { name: "schema missing type", tool: "grill_ingest", args: { attribute_schema: { notes: {} } }, want: 'attribute_schema "notes" must be an object' },
     ];
     for (const c of cases) {
@@ -794,7 +829,7 @@ async function errorCodeTests(
       const { isError, content } = await callTool(stubClient, "grill_ingest_batch", {
         token: "scope1",
         file_paths: files,
-        attributes: { batch: "q3", year: 2024 },
+        attributes: { batch: "q3", notes: "private", year: 2024 },
         attribute_schema: { notes: { type: "encrypted_text" } },
       });
       let ok =
@@ -802,7 +837,7 @@ async function errorCodeTests(
         content.submitted_count === 3 &&
         ingest.attrHeaders.length === 3 &&
         ingest.attrHeaders.every(
-          (h) => h.attributes === '{"batch":"q3","year":2024}' && h.schema === '{"notes":{"type":"encrypted_text"}}',
+          (h) => h.attributes === '{"batch":"q3","notes":"private","year":2024}' && h.schema === '{"notes":{"type":"encrypted_text"}}',
         );
       record("batch attaches attributes to every file", ok, ok ? undefined : `${JSON.stringify(ingest.attrHeaders)} ${JSON.stringify(content)}`);
 

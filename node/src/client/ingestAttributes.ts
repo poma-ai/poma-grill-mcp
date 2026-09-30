@@ -32,7 +32,9 @@ function isScalar(v: unknown): boolean {
 }
 
 function validAttributeValue(v: unknown): boolean {
-  if (v === null || isScalar(v)) return true;
+  // null is refused: grill rejects it on every ingest path; it only means
+  // "remove" on the metadata-patch endpoint, which MCP does not use.
+  if (isScalar(v)) return true;
   return Array.isArray(v) && v.every(isScalar);
 }
 
@@ -40,7 +42,9 @@ function validAttributeValue(v: unknown): boolean {
 // escaped as \uXXXX (lowercase hex, surrogate pairs above the BMP) — plain
 // ASCII, safe as an HTTP header value, matching the Go encoder.
 function compactASCIIJSON(obj: Record<string, unknown>): string {
-  const sorted: Record<string, unknown> = {};
+  // Null-prototype object: a name like "__proto__" passes the name regex, and on
+  // a plain object the assignment would set the prototype and drop the attribute.
+  const sorted: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const k of Object.keys(obj).sort()) sorted[k] = obj[k];
   return JSON.stringify(sorted).replace(
     /[\u0080-￿]/g,
@@ -74,7 +78,7 @@ export function encodeIngestAttributes(
       }
       if (!validAttributeValue(attrsArg[name])) {
         throw new Error(
-          `attribute ${JSON.stringify(name)}: value must be a string, number, boolean, an array of those, or null`,
+          `attribute ${JSON.stringify(name)}: value must be a string, number, boolean, or an array of those (null is not accepted at ingest)`,
         );
       }
     }
@@ -94,7 +98,7 @@ export function encodeIngestAttributes(
       throw new Error('attribute_schema must be an object like {"name": {"type": "encrypted_text"}}');
     }
     const names = Object.keys(schemaArg).sort();
-    const decl: Record<string, unknown> = {};
+    const decl: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
     for (const name of names) {
       if (!attributeNameRe.test(name)) {
         throw new Error(
@@ -105,6 +109,13 @@ export function encodeIngestAttributes(
       const t = isPlainObject(d) ? d.type : undefined;
       if (typeof t !== "string" || t.trim() === "") {
         throw new Error(`attribute_schema ${JSON.stringify(name)} must be an object like {"type": "encrypted_text"}`);
+      }
+      // Grill rejects a declaration for a name this document does not carry,
+      // so an orphan must fail here, not after a 201.
+      if (!isPlainObject(attrsArg) || !Object.prototype.hasOwnProperty.call(attrsArg, name)) {
+        throw new Error(
+          `attribute_schema declares ${JSON.stringify(name)}, but attributes has no value for it; attribute_schema only declares types for names present in attributes`,
+        );
       }
       decl[name] = { type: t };
     }

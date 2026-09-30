@@ -29,15 +29,15 @@ var attributeNameRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 
 // ingestAttributesDescription and ingestAttributeSchemaDescription are shared
 // verbatim with the Node schema (schemas/tools.json). Keep byte-identical.
-const ingestAttributesDescription = "Optional typed document attributes: a flat object of name → value, where a value is a string, number, boolean, an array of those, or null, e.g. {\"region\":\"emea\",\"year\":2024}. Call grill_attributes first and reuse an existing name and type where one fits. Names must match ^[a-z0-9_]{1,64}$ and are permanent per project, counting against max_names; string, number and boolean values (and arrays of them) are typed by their value — declare encrypted_text or datetime in attribute_schema. Filter on them later with grill_search attribute_filters. Sent as the X-Attributes header: at most 64 names and 2048 characters of compact JSON; larger input is refused with invalid_input, never truncated."
+const ingestAttributesDescription = "Optional typed document attributes: a flat object of name → value, where a value is a string, number, boolean, or an array of those (never null), e.g. {\"region\":\"emea\",\"year\":2024}. Call grill_attributes first and reuse an existing name and type where one fits. Names must match ^[a-z0-9_]{1,64}$ and are permanent per project, counting against max_names; string, number and boolean values (and arrays of them) are typed by their value — declare encrypted_text or datetime in attribute_schema. Filter on them later with grill_search attribute_filters. Sent as the X-Attributes header: at most 64 names and 2048 characters of compact JSON; larger input is refused with invalid_input, never truncated."
 
-const ingestAttributeSchemaDescription = "Optional type declarations for names in attributes, shaped {\"name\": {\"type\": \"<POMA type>\"}}, e.g. {\"case_notes\":{\"type\":\"encrypted_text\"}}. Declare only where the value cannot say the type: encrypted_text must ALWAYS be declared (an undeclared new name is stored as a plain string), and datetime when introducing a new datetime name. A declaration that conflicts with the type already in force for that name is rejected. Sent as the X-Attribute-Schema header, same 2048-character cap."
+const ingestAttributeSchemaDescription = "Optional type declarations, only for names present in attributes (a declaration for any other name is refused), shaped {\"name\": {\"type\": \"<POMA type>\"}}, e.g. {\"case_notes\":{\"type\":\"encrypted_text\"}}. Declare only where the value cannot say the type: encrypted_text must ALWAYS be declared (an undeclared new name is stored as a plain string), and datetime when introducing a new datetime name. A declaration that conflicts with the type already in force for that name is rejected. Sent as the X-Attribute-Schema header, same 2048-character cap."
 
 // Legacy labels: kept working unchanged, but steered toward attributes.
 const ingestLabelsDescription = "Legacy — being retired in favour of attributes; prefer attributes for new work. Optional key:value labels to attach to the ingested document, e.g. {\"team\":\"eng\"}. Sent as the X-Labels header. Avoid ':' and ',' in keys or values (used as delimiters)."
 
 // attributesReuseGuidance is appended to every ingest tool description.
-const attributesReuseGuidance = " Typed attributes: call grill_attributes first and reuse an existing name and type where one fits; pass values in `attributes`, and use `attribute_schema` only to declare a type the value cannot express (encrypted_text must always be declared; datetime for a new name). Names are permanent per project and count against max_names. `labels` is legacy and being retired in favour of attributes — prefer attributes for new work."
+const attributesReuseGuidance = " Typed attributes: call grill_attributes first and reuse an existing name and type where one fits; pass values in `attributes`, and use `attribute_schema` only to declare a type the value cannot express, and only for names present in `attributes` (encrypted_text must always be declared; datetime for a new name). Names are permanent per project and count against max_names. `labels` is legacy and being retired in favour of attributes — prefer attributes for new work."
 
 // Fresh schema instances per tool: jsonschema-go requires a tree, so a shared
 // pointer must never appear twice within one tool's schema.
@@ -45,7 +45,7 @@ func ingestAttributesSchema() *jsonschema.Schema {
 	return &jsonschema.Schema{
 		Type: "object",
 		AdditionalProperties: &jsonschema.Schema{
-			Types: []string{"string", "number", "boolean", "array", "null"},
+			Types: []string{"string", "number", "boolean", "array"},
 			Items: &jsonschema.Schema{Types: []string{"string", "number", "boolean"}},
 		},
 		Description: ingestAttributesDescription,
@@ -106,7 +106,7 @@ func encodeIngestAttributes(attrs map[string]json.RawMessage, schema map[string]
 				return "", "", fmt.Errorf("attribute %q: %v", name, err)
 			}
 			if !validAttributeValue(v, true) {
-				return "", "", fmt.Errorf("attribute %q: value must be a string, number, boolean, an array of those, or null", name)
+				return "", "", fmt.Errorf("attribute %q: value must be a string, number, boolean, or an array of those (null is not accepted at ingest)", name)
 			}
 			vals[name] = v
 		}
@@ -130,6 +130,11 @@ func encodeIngestAttributes(attrs map[string]json.RawMessage, schema map[string]
 			}
 			if err := json.Unmarshal(schema[name], &d); err != nil || d.Type == nil || strings.TrimSpace(*d.Type) == "" {
 				return "", "", fmt.Errorf("attribute_schema %q must be an object like {\"type\": \"encrypted_text\"}", name)
+			}
+			// Grill rejects a declaration for a name this document does not
+			// carry, so an orphan must fail here, not after a 201.
+			if _, ok := attrs[name]; !ok {
+				return "", "", fmt.Errorf("attribute_schema declares %q, but attributes has no value for it; attribute_schema only declares types for names present in attributes", name)
 			}
 			decl[name] = map[string]string{"type": *d.Type}
 		}
@@ -169,7 +174,9 @@ func decodeUseNumber(raw json.RawMessage) (any, error) {
 func validAttributeValue(v any, allowArray bool) bool {
 	switch x := v.(type) {
 	case nil:
-		return allowArray // null is a whole-value option, not an array element
+		// Grill rejects null on every ingest path (resolve_types / check_value_limits);
+		// null only means "remove" on the metadata-patch endpoint, which MCP does not use.
+		return false
 	case string, bool, json.Number:
 		return true
 	case []any:

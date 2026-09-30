@@ -54,10 +54,10 @@ avoid `:` and `,` in label keys and values, they are the wire delimiters.
 `grill_ingest`, `grill_ingest_sync` and `grill_ingest_batch` take typed document
 attributes, which `grill_search` can later filter on with `attribute_filters`:
 
-- `attributes` — `{name: value}`, where a value is a string, number, boolean, an array of
-  those, or `null`. E.g. `{"region": "emea", "year": 2024}`.
+- `attributes` — `{name: value}`, where a value is a string, number, boolean, or an array
+  of those. `null` is refused. E.g. `{"region": "emea", "year": 2024}`.
 - `attribute_schema` — `{name: {"type": "<POMA type>"}}`, only for types the value cannot
-  express.
+  express, and only for names present in `attributes`.
 
 Steps:
 
@@ -69,7 +69,8 @@ Steps:
    `max_names`; it cannot be renamed or freed. New names must match `^[a-z0-9_]{1,64}$`.
 3. **Pass the values in `attributes`.** Strings, numbers, booleans and their arrays are
    typed by value.
-4. **Declare a type in `attribute_schema` only when needed.** `encrypted_text` must
+4. **Declare a type in `attribute_schema` only when needed**, and only for a name you also
+   pass in `attributes`. `encrypted_text` must
    **always** be declared — undeclared, a new name is stored as a plain string. Declare
    `datetime` when introducing a new datetime name. A declaration that conflicts with the
    type already in force for that name is rejected.
