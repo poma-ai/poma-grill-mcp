@@ -118,3 +118,24 @@ jobs:
         git-token: ${{ secrets.POMA_DEPLOY_REPO_TOKEN }}
         git-user: "gen-poma"
         git-email: "gen-poma@poma-ai.com"
+
+    # The same image also runs as poma-grill-mcp-index4ai (mcp(-dev).index4.ai; the MCP
+    # accepts only tokens for its own host, so it is a second deployment). Its app name
+    # is not its image name, and the action above has no image input and passes its
+    # namespace default as a literal '""', which defeats poma-deploy's
+    # .ops-repo-exceptional-apps.yaml lookup. So run the action's own image directly
+    # with -image. Fresh clone: the step above already pushed its commit.
+    - name: Deploy Image (index4ai MCP)
+      if: github.event_name != 'pull_request'
+      env:
+        TAG: ${{ steps.commit.outputs.short }}
+        GIT_TOKEN: ${{ secrets.POMA_DEPLOY_REPO_TOKEN }}
+      run: >-
+        docker run --rm -e TAG -e GIT_TOKEN
+        -v "$GITHUB_WORKSPACE:/github/workspace" -w /github/workspace
+        --entrypoint /bin/sh ghcr.io/nice-pink/repo-services-deploy:latest -c
+        '/app/bin/deploy -app=poma-grill-mcp-index4ai -image=poma-grill-mcp
+        -env=${{ env.ENV }} -base=base/apps "-pathScheme={base}/{app}/{env}"
+        -srcPath=./poma-deploy-index4ai -tag="$TAG"
+        -gitUrl=https://github.com/poma-ai/poma-deploy.git -gitToken="$GIT_TOKEN"
+        -gitUser=gen-poma -gitEmail=gen-poma@poma-ai.com -gitPush'
