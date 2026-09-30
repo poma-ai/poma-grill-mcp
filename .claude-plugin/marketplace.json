@@ -16,7 +16,7 @@
       "displayName": "POMA Grill",
       "source": "./plugins/poma-grill",
       "description": "POMA Grill — ingest documents into the Grill context engine and run semantic search over them from any agent.",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "author": {
         "name": "POMA AI",
         "email": "support@poma-ai.com",
