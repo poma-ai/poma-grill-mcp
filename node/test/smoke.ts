@@ -764,6 +764,23 @@ async function errorCodeTests(
     const ok = !isError && h?.attributes === '{"__proto__":"p"}' && h?.schema === '{"__proto__":{"type":"encrypted_text"}}';
     record("__proto__ sent in attributes and attribute_schema", ok, ok ? undefined : `${JSON.stringify(h)} ${JSON.stringify(content)}`);
   }
+  // 13d3. A declared empty array is legal (the only way to store []) and is
+  //       sent with both headers; float declared over int elements is legal too.
+  {
+    ingest.attrHeaders.length = 0;
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      attributes: { tags: [], w: [1, 2.5] },
+      attribute_schema: { tags: { type: "[]string" }, w: { type: "[]float" } },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok =
+      !isError &&
+      h?.attributes === '{"tags":[],"w":[1,2.5]}' &&
+      h?.schema === '{"tags":{"type":"[]string"},"w":{"type":"[]float"}}';
+    record("declared empty array + []float over ints accepted", ok, ok ? undefined : `${JSON.stringify(h)} ${JSON.stringify(content)}`);
+  }
   // 13e. No attributes → neither header is sent.
   {
     ingest.attrHeaders.length = 0;
@@ -801,6 +818,30 @@ async function errorCodeTests(
         args: { attributes: { region: "emea" }, attribute_schema: { ["__proto__"]: { type: "encrypted_text" } } },
         want: 'attribute_schema declares "__proto__"',
       },
+      { name: "mixed string and int", tool: "grill_ingest", args: { attributes: { x: ["a", 1] } }, want: 'attribute "x": mixed element types in array [int string]' },
+      { name: "mixed int and float", tool: "grill_ingest", args: { attributes: { x: [1, 2.5] } }, want: 'attribute "x": mixed element types in array [float int]' },
+      { name: "mixed bool and string", tool: "grill_ingest", args: { attributes: { x: [true, "a"] } }, want: "mixed element types" },
+      { name: "undeclared empty array", tool: "grill_ingest", args: { attributes: { x: [] } }, want: 'attribute "x": an empty array has no type to infer; declare it in attribute_schema' },
+      {
+        name: "undeclared empty array (batch)",
+        tool: "grill_ingest_batch",
+        args: { file_paths: ["/nonexistent/never-read.txt"], attributes: { x: [] } },
+        want: "an empty array has no type to infer",
+      },
+      {
+        name: "empty array declared scalar",
+        tool: "grill_ingest",
+        args: { attributes: { x: [] }, attribute_schema: { x: { type: "string" } } },
+        want: 'attribute "x" is declared "string", which needs a scalar',
+      },
+      {
+        name: "declared []int with string",
+        tool: "grill_ingest",
+        args: { attributes: { x: [1, "a"] }, attribute_schema: { x: { type: "[]int" } } },
+        want: 'attribute "x": element "a" is not a int',
+      },
+      { name: "int beyond 2^53", tool: "grill_ingest", args: { attributes: { x: 2 ** 54 } }, want: "outside the JSON-safe integer range" },
+      { name: "array over 64 elements", tool: "grill_ingest", args: { attributes: { x: Array(65).fill(1) } }, want: "65 elements exceeds the cap of 64" },
       { name: "schema missing type", tool: "grill_ingest", args: { attribute_schema: { notes: {} } }, want: 'attribute_schema "notes" must be an object' },
     ];
     for (const c of cases) {

@@ -68,7 +68,10 @@ Steps:
    documents. A name, once declared, is **permanent** for the project and counts against
    `max_names`; it cannot be renamed or freed. New names must match `^[a-z0-9_]{1,64}$`.
 3. **Pass the values in `attributes`.** Strings, numbers, booleans and their arrays are
-   typed by value.
+   typed by value. An array must be non-empty and of one kind — all strings, all ints, all
+   floats or all booleans (`[1, 2.5]` mixes int and float and is refused). An empty array
+   is accepted only when `attribute_schema` declares its array type, e.g.
+   `{"tags": {"type": "[]string"}}`.
 4. **Declare a type in `attribute_schema` only when needed**, and only for a name you also
    pass in `attributes`. `encrypted_text` must
    **always** be declared — undeclared, a new name is stored as a plain string. Declare

@@ -58,14 +58,14 @@ func startIngestStub(t *testing.T) *ingestCapture {
 }
 
 func TestEncodeIngestAttributesHeaderValues(t *testing.T) {
-	attrs := rawMap(t, `{"notes":"private","year":2024,"region":"emea","tags":["a","b"],"big":9007199254740993,"ok":true,"city":"Zürich 🍫"}`)
+	attrs := rawMap(t, `{"notes":"private","year":2024,"region":"emea","tags":["a","b"],"big":9007199254740992,"ok":true,"city":"Zürich 🍫"}`)
 	schema := rawMap(t, `{"notes":{"type":"encrypted_text"}}`)
 	a, s, err := encodeIngestAttributes(attrs, schema)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Keys sorted, compact, non-ASCII escaped, big int preserved exactly.
-	want := `{"big":9007199254740993,"city":"Z` + "\\u00fcrich \\ud83c\\udf6b" + `","notes":"private","ok":true,"region":"emea","tags":["a","b"],"year":2024}`
+	want := `{"big":9007199254740992,"city":"Z` + "\\u00fcrich \\ud83c\\udf6b" + `","notes":"private","ok":true,"region":"emea","tags":["a","b"],"year":2024}`
 	if a != want {
 		t.Errorf("X-Attributes = %s\nwant           %s", a, want)
 	}
@@ -104,6 +104,18 @@ func TestEncodeIngestAttributesValidation(t *testing.T) {
 		{"null in array", rawMap(t, `{"x":[null]}`), nil, `attribute "x": value must be`},
 		{"orphan declaration", rawMap(t, `{"region":"emea"}`), rawMap(t, `{"notes":{"type":"encrypted_text"}}`), `attribute_schema declares "notes", but attributes has no value for it`},
 		{"schema without attributes", nil, rawMap(t, `{"notes":{"type":"encrypted_text"}}`), `attribute_schema declares "notes", but attributes has no value for it`},
+		{"mixed string and int", rawMap(t, `{"x":["a",1]}`), nil, `attribute "x": mixed element types in array [int string]`},
+		{"mixed int and float", rawMap(t, `{"x":[1,2.5]}`), nil, `attribute "x": mixed element types in array [float int]`},
+		{"mixed int and float literal 2.0", rawMap(t, `{"x":[1,2.0]}`), nil, `mixed element types in array [float int]`},
+		{"mixed bool and string", rawMap(t, `{"x":[true,"a"]}`), nil, `mixed element types`},
+		{"undeclared empty array", rawMap(t, `{"x":[]}`), nil, `attribute "x": an empty array has no type to infer; declare it in attribute_schema`},
+		{"empty array declared scalar", rawMap(t, `{"x":[]}`), rawMap(t, `{"x":{"type":"string"}}`), `attribute "x" is declared "string", which needs a scalar`},
+		{"scalar declared array", rawMap(t, `{"x":"a"}`), rawMap(t, `{"x":{"type":"[]string"}}`), `attribute "x" is declared "[]string", which needs an array`},
+		{"declared []int with string", rawMap(t, `{"x":[1,"a"]}`), rawMap(t, `{"x":{"type":"[]int"}}`), `attribute "x": element "a" is not a int`},
+		{"declared int with float", rawMap(t, `{"x":2.5}`), rawMap(t, `{"x":{"type":"int"}}`), `element 2.5 is not a int`},
+		{"declared encrypted_text with number", rawMap(t, `{"x":5}`), rawMap(t, `{"x":{"type":"encrypted_text"}}`), `element 5 is not a encrypted_text`},
+		{"int beyond 2^53", rawMap(t, `{"x":9007199254740993}`), nil, `outside the JSON-safe integer range`},
+		{"array over 64 elements", rawMap(t, `{"x":[`+strings.TrimSuffix(strings.Repeat("1,", 65), ",")+`]}`), nil, `65 elements exceeds the cap of 64`},
 		{"top-level null", rawMap(t, `{"gone":null}`), nil, `attribute "gone": value must be`},
 		{"too many names", many, nil, "at most 64"},
 		{"attributes over cap", rawMap(t, `{"x":"`+long+`"}`), nil, "capped at 2048"},
@@ -255,5 +267,70 @@ func TestGrillIngestBatchInvalidAttributesUploadsNothing(t *testing.T) {
 	}
 	if out.Results == nil {
 		t.Error("results must be [] not null")
+	}
+}
+
+// Values grill accepts must still pass: a declared empty array (the only way
+// to store []), float declared over int elements, a uniform float array.
+func TestEncodeIngestAttributesAcceptsGrillLegalShapes(t *testing.T) {
+	sixtyFour := `[` + strings.TrimSuffix(strings.Repeat("1,", 64), ",") + `]`
+	cases := []struct {
+		name, attrs, schema, wantAttrs, wantSchema string
+	}{
+		{"declared empty array", `{"tags":[]}`, `{"tags":{"type":"[]string"}}`, `{"tags":[]}`, `{"tags":{"type":"[]string"}}`},
+		{"float declared over ints", `{"w":[1,2.5]}`, `{"w":{"type":"[]float"}}`, `{"w":[1,2.5]}`, `{"w":{"type":"[]float"}}`},
+		{"uniform floats", `{"w":[1.0,2.5]}`, ``, `{"w":[1.0,2.5]}`, ``},
+		{"int at -2^53", `{"n":-9007199254740992}`, ``, `{"n":-9007199254740992}`, ``},
+		{"64 elements", `{"x":` + sixtyFour + `}`, ``, `{"x":` + sixtyFour + `}`, ``},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var schema map[string]json.RawMessage
+			if c.schema != "" {
+				schema = rawMap(t, c.schema)
+			}
+			a, s, err := encodeIngestAttributes(rawMap(t, c.attrs), schema)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if a != c.wantAttrs || s != c.wantSchema {
+				t.Fatalf("headers = %s / %s, want %s / %s", a, s, c.wantAttrs, c.wantSchema)
+			}
+		})
+	}
+}
+
+// A declared empty array reaches the gateway with both headers; an undeclared
+// one never leaves the MCP server.
+func TestGrillIngestEmptyArrayNeedsDeclaration(t *testing.T) {
+	capt := startIngestStub(t)
+	res, out, _ := GrillIngest(context.Background(), nil, GrillIngestInput{
+		Token: "tok", URL: "https://example.com/doc.pdf",
+		Attributes: rawMap(t, `{"tags":[]}`),
+	})
+	if res == nil || !res.IsError || out.Code != CodeInvalidInput || !strings.Contains(out.Error, "empty array") {
+		t.Fatalf("undeclared []: want invalid_input, got %+v", out.GrillError)
+	}
+	if n := len(capt.all()); n != 0 {
+		t.Fatalf("requests = %d after a refused ingest, want 0", n)
+	}
+
+	_, out, _ = GrillIngest(context.Background(), nil, GrillIngestInput{
+		Token: "tok", URL: "https://example.com/doc.pdf",
+		Attributes:      rawMap(t, `{"tags":[]}`),
+		AttributeSchema: rawMap(t, `{"tags":{"type":"[]string"}}`),
+	})
+	if out.Error != "" {
+		t.Fatalf("declared []: unexpected error %s", out.Error)
+	}
+	reqs := capt.all()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	if got := reqs[0].Get("X-Attributes"); got != `{"tags":[]}` {
+		t.Errorf("X-Attributes = %q", got)
+	}
+	if got := reqs[0].Get("X-Attribute-Schema"); got != `{"tags":{"type":"[]string"}}` {
+		t.Errorf("X-Attribute-Schema = %q", got)
 	}
 }

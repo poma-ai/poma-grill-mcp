@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"regexp"
 	"sort"
 	"strings"
@@ -29,9 +30,9 @@ var attributeNameRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 
 // ingestAttributesDescription and ingestAttributeSchemaDescription are shared
 // verbatim with the Node schema (schemas/tools.json). Keep byte-identical.
-const ingestAttributesDescription = "Optional typed document attributes: a flat object of name → value, where a value is a string, number, boolean, or an array of those (never null), e.g. {\"region\":\"emea\",\"year\":2024}. Call grill_attributes first and reuse an existing name and type where one fits. Names must match ^[a-z0-9_]{1,64}$ and are permanent per project, counting against max_names; string, number and boolean values (and arrays of them) are typed by their value — declare encrypted_text or datetime in attribute_schema. Filter on them later with grill_search attribute_filters. Sent as the X-Attributes header: at most 64 names and 2048 characters of compact JSON; larger input is refused with invalid_input, never truncated."
+const ingestAttributesDescription = "Optional typed document attributes: a flat object of name → value, where a value is a string, number, boolean, or an array of those (never null), e.g. {\"region\":\"emea\",\"year\":2024}. An array must be non-empty and hold one kind of element — all strings, all ints, all floats or all booleans (1 and 2.5 do not mix); an empty array is accepted only when attribute_schema declares its array type (e.g. \"[]string\"). Call grill_attributes first and reuse an existing name and type where one fits. Names must match ^[a-z0-9_]{1,64}$ and are permanent per project, counting against max_names; string, number and boolean values (and arrays of them) are typed by their value — declare encrypted_text or datetime in attribute_schema. Filter on them later with grill_search attribute_filters. Sent as the X-Attributes header: at most 64 names and 2048 characters of compact JSON; larger input is refused with invalid_input, never truncated."
 
-const ingestAttributeSchemaDescription = "Optional type declarations, only for names present in attributes (a declaration for any other name is refused), shaped {\"name\": {\"type\": \"<POMA type>\"}}, e.g. {\"case_notes\":{\"type\":\"encrypted_text\"}}. Declare only where the value cannot say the type: encrypted_text must ALWAYS be declared (an undeclared new name is stored as a plain string), and datetime when introducing a new datetime name. A declaration that conflicts with the type already in force for that name is rejected. Sent as the X-Attribute-Schema header, same 2048-character cap."
+const ingestAttributeSchemaDescription = "Optional type declarations, only for names present in attributes (a declaration for any other name is refused), shaped {\"name\": {\"type\": \"<POMA type>\"}}, e.g. {\"case_notes\":{\"type\":\"encrypted_text\"}}. Declare only where the value cannot say the type: encrypted_text must ALWAYS be declared (an undeclared new name is stored as a plain string), datetime when introducing a new datetime name, and the array type (e.g. \"[]string\") of an empty array. A declaration that conflicts with the type already in force for that name is rejected. Sent as the X-Attribute-Schema header, same 2048-character cap."
 
 // Legacy labels: kept working unchanged, but steered toward attributes.
 const ingestLabelsDescription = "Legacy — being retired in favour of attributes; prefer attributes for new work. Optional key:value labels to attach to the ingested document, e.g. {\"team\":\"eng\"}. Sent as the X-Labels header. Avoid ':' and ',' in keys or values (used as delimiters)."
@@ -92,6 +93,24 @@ func (h ingestHeaders) apply(headers map[string]string) {
 // error the caller reports as invalid_input.
 func encodeIngestAttributes(attrs map[string]json.RawMessage, schema map[string]json.RawMessage) (string, string, error) {
 	var attrHdr, schemaHdr string
+
+	// Declarations first: the value checks below depend on them (a declared
+	// type decides array-vs-scalar and element kinds; only a declared array
+	// type makes an empty array legal).
+	declTypes := make(map[string]string, len(schema))
+	for _, name := range sortedKeys(schema) {
+		if !attributeNameRe.MatchString(name) {
+			return "", "", fmt.Errorf("attribute_schema name %q must match ^[a-z0-9_]{1,64}$ (lowercase letters, digits, underscore)", name)
+		}
+		var d struct {
+			Type *string `json:"type"`
+		}
+		if err := json.Unmarshal(schema[name], &d); err != nil || d.Type == nil || strings.TrimSpace(*d.Type) == "" {
+			return "", "", fmt.Errorf("attribute_schema %q must be an object like {\"type\": \"encrypted_text\"}", name)
+		}
+		declTypes[name] = *d.Type
+	}
+
 	if len(attrs) > 0 {
 		if len(attrs) > attributesMaxNames {
 			return "", "", fmt.Errorf("attributes has %d names; at most %d per document", len(attrs), attributesMaxNames)
@@ -108,6 +127,9 @@ func encodeIngestAttributes(attrs map[string]json.RawMessage, schema map[string]
 			if !validAttributeValue(v, true) {
 				return "", "", fmt.Errorf("attribute %q: value must be a string, number, boolean, or an array of those (null is not accepted at ingest)", name)
 			}
+			if err := checkAttributeValue(name, v, declTypes[name]); err != nil {
+				return "", "", err
+			}
 			vals[name] = v
 		}
 		s, err := compactASCIIJSON(vals)
@@ -119,24 +141,16 @@ func encodeIngestAttributes(attrs map[string]json.RawMessage, schema map[string]
 		}
 		attrHdr = s
 	}
-	if len(schema) > 0 {
-		decl := make(map[string]any, len(schema))
+
+	if len(declTypes) > 0 {
+		decl := make(map[string]any, len(declTypes))
 		for _, name := range sortedKeys(schema) {
-			if !attributeNameRe.MatchString(name) {
-				return "", "", fmt.Errorf("attribute_schema name %q must match ^[a-z0-9_]{1,64}$ (lowercase letters, digits, underscore)", name)
-			}
-			var d struct {
-				Type *string `json:"type"`
-			}
-			if err := json.Unmarshal(schema[name], &d); err != nil || d.Type == nil || strings.TrimSpace(*d.Type) == "" {
-				return "", "", fmt.Errorf("attribute_schema %q must be an object like {\"type\": \"encrypted_text\"}", name)
-			}
 			// Grill rejects a declaration for a name this document does not
 			// carry, so an orphan must fail here, not after a 201.
 			if _, ok := attrs[name]; !ok {
 				return "", "", fmt.Errorf("attribute_schema declares %q, but attributes has no value for it; attribute_schema only declares types for names present in attributes", name)
 			}
-			decl[name] = map[string]string{"type": *d.Type}
+			decl[name] = map[string]string{"type": declTypes[name]}
 		}
 		s, err := compactASCIIJSON(decl)
 		if err != nil {
@@ -148,6 +162,115 @@ func encodeIngestAttributes(attrs map[string]json.RawMessage, schema map[string]
 		schemaHdr = s
 	}
 	return attrHdr, schemaHdr, nil
+}
+
+// Grill's per-value rules (poma-grill attribute_schema.py: infer_type,
+// resolve_types, check_value_limits / _check_element), applied to the value
+// exactly as it goes on the wire. Mirrored here because the gateway passes
+// values through unchecked: without this a violating value gets a 201 and the
+// job then fails inside grill.
+const (
+	attributesMaxArrayElems = 64      // grill ATTR_MAX_ARRAY_ELEMS default (config.toml attr_max_array_elems)
+	attributesJSONSafeInt   = 1 << 53 // grill _JSON_SAFE_INT: |int| must be <= 2^53
+)
+
+// attributeKind is the kind grill infers for one scalar: "string", "bool",
+// "int" or "float". A number is a float when its JSON literal has a '.', 'e'
+// or 'E' — Python's json module reads 2.0 as float and 2 as int, and the
+// literal is what is sent.
+func attributeKind(v any) string {
+	switch x := v.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case json.Number:
+		if strings.ContainsAny(string(x), ".eE") {
+			return "float"
+		}
+		return "int"
+	}
+	return ""
+}
+
+func checkAttributeValue(name string, v any, declared string) error {
+	arr, isArr := v.([]any)
+	elems := []any{v}
+	if isArr {
+		elems = arr
+	}
+
+	var base string
+	if declared == "" {
+		// Undeclared: grill infers the type from the value.
+		if isArr {
+			if len(arr) == 0 {
+				return fmt.Errorf("attribute %q: an empty array has no type to infer; declare it in attribute_schema with an array type (e.g. {\"%s\": {\"type\": \"[]string\"}}) or leave the attribute out", name, name)
+			}
+			kinds := map[string]bool{}
+			for _, e := range arr {
+				kinds[attributeKind(e)] = true
+			}
+			if len(kinds) > 1 {
+				ks := make([]string, 0, len(kinds))
+				for k := range kinds {
+					ks = append(ks, k)
+				}
+				sort.Strings(ks)
+				return fmt.Errorf("attribute %q: mixed element types in array %v; every element must be the same kind (string, int, float or bool — int and float count as different kinds)", name, ks)
+			}
+		}
+		base = attributeKind(elems[0]) // elems is non-empty here
+	} else {
+		// Declared: the value's shape must match the declared type.
+		wantArr := strings.HasPrefix(declared, "[]")
+		if isArr != wantArr {
+			shape := "a scalar"
+			if wantArr {
+				shape = "an array"
+			}
+			return fmt.Errorf("attribute %q is declared %q, which needs %s", name, declared, shape)
+		}
+		base = strings.TrimPrefix(declared, "[]")
+		for _, e := range elems {
+			k := attributeKind(e)
+			ok := true
+			switch base {
+			case "bool", "int", "string":
+				ok = k == base
+			case "float":
+				ok = k == "int" || k == "float"
+			case "datetime", "encrypted_text":
+				ok = k == "string"
+			}
+			if !ok {
+				return fmt.Errorf("attribute %q: element %s is not a %s (declared %q)", name, string(mustJSON(e)), base, declared)
+			}
+		}
+	}
+
+	if isArr && len(arr) > attributesMaxArrayElems {
+		return fmt.Errorf("attribute %q: %d elements exceeds the cap of %d", name, len(arr), attributesMaxArrayElems)
+	}
+	if base == "int" {
+		limit := big.NewInt(attributesJSONSafeInt)
+		for _, e := range elems {
+			n, ok := e.(json.Number)
+			if !ok {
+				continue
+			}
+			bi, ok := new(big.Int).SetString(string(n), 10)
+			if ok && bi.CmpAbs(limit) > 0 {
+				return fmt.Errorf("attribute %q: %s is outside the JSON-safe integer range (±2^53)", name, n)
+			}
+		}
+	}
+	return nil
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 func sortedKeys(m map[string]json.RawMessage) []string {
