@@ -54,8 +54,9 @@ projects. Check with `grill_projects`, then re-run with the right `project_id`.
 
 ## Filtering by attribute
 
-Before building `attribute_filters`, call **`grill_attributes`** to learn which attribute
-names the project actually has and the type of each. Use the exact name it returns: a
+Attributes are set at ingest through the `attributes` argument of the ingest tools. Before
+building `attribute_filters`, call **`grill_attributes`** to learn which attribute names the
+project actually has and the type of each. Use the exact name it returns: a
 filter on a name the project has never used matches **nothing** rather than being ignored,
 so a guessed `doc_year` where the project stores `year` silently empties the result. The
 type decides which operators work (`encrypted_text`, for instance, matches exact tokens

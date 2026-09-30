@@ -276,7 +276,7 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 	// allowing server-wide default project scoping for the HTTP upload endpoint.
 	projectID := getProjectID(r.Header.Get("X-Project-ID"))
 	// Forward any X-Labels the caller supplied on the upload request.
-	body, st, err := grillIngestData(c, data, filename, projectID, r.Header.Get("X-Labels"))
+	body, st, err := grillIngestData(c, data, filename, projectID, ingestHeaders{Labels: r.Header.Get("X-Labels")})
 	if err != nil {
 		// Network/client error reaching the Grill API — transient, retryable.
 		writeIngestUploadError(w, http.StatusBadGateway, GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)})

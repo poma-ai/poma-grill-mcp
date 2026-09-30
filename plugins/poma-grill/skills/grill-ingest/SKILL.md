@@ -42,23 +42,46 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
   does not download it, so this works fine against the hosted endpoint.
 
 Optional on all three: `filename` (basename shown in the UI; inferred from `file_path` or
-content when omitted) and `labels`, a flat `{key: value}` map sent as the `X-Labels`
-header. Avoid `:` and `,` in label keys and values — they are the wire delimiters.
+content when omitted), typed `attributes` / `attribute_schema` (next section), and
+`labels`.
+
+`labels` is **legacy and being retired in favour of attributes** — prefer `attributes` for
+new work. It still works unchanged: a flat `{key: value}` map sent as the `X-Labels` header;
+avoid `:` and `,` in label keys and values, they are the wire delimiters.
 
 ## Typed attributes: call `grill_attributes` first
 
-Before attaching any typed attribute to a document (whichever path sets it), **call
-`grill_attributes`** and reuse what is already there. It returns every attribute name the
-project has declared, each with its type, plus `max_names`, the project's cap on distinct
-names.
+`grill_ingest`, `grill_ingest_sync` and `grill_ingest_batch` take typed document
+attributes, which `grill_search` can later filter on with `attribute_filters`:
 
-- Reuse an existing name and type where one fits. If `year` exists, do not invent
-  `doc_year`: the second name splits the data, so a filter on either one misses half the
-  documents.
-- Declare a new name only when nothing listed fits. A name, once declared, is **permanent**
-  for the project and counts against `max_names`; it cannot be renamed or freed.
-- If `grill_attributes` fails with a retryable `upstream_error` (HTTP 503, schema
-  unreadable), wait and retry — do not declare new names blind.
+- `attributes` — `{name: value}`, where a value is a string, number, boolean, an array of
+  those, or `null`. E.g. `{"region": "emea", "year": 2024}`.
+- `attribute_schema` — `{name: {"type": "<POMA type>"}}`, only for types the value cannot
+  express.
+
+Steps:
+
+1. **Call `grill_attributes` first.** It returns every name the project has declared, each
+   with its type, plus `max_names`, the project's cap on distinct names.
+2. **Reuse an existing name and type where one fits.** If `year` exists, do not invent
+   `doc_year`: the second name splits the data, so a filter on either misses half the
+   documents. A name, once declared, is **permanent** for the project and counts against
+   `max_names`; it cannot be renamed or freed. New names must match `^[a-z0-9_]{1,64}$`.
+3. **Pass the values in `attributes`.** Strings, numbers, booleans and their arrays are
+   typed by value.
+4. **Declare a type in `attribute_schema` only when needed.** `encrypted_text` must
+   **always** be declared — undeclared, a new name is stored as a plain string. Declare
+   `datetime` when introducing a new datetime name. A declaration that conflicts with the
+   type already in force for that name is rejected.
+
+For `grill_ingest_batch`, `attributes` and `attribute_schema` apply to **every** file in the
+batch; to give files different attributes, ingest them separately.
+
+Each of the two headers is capped at 2048 characters of compact JSON (and 64 names).
+Anything larger, or a malformed name, is refused with `invalid_input` before anything is
+uploaded — nothing is truncated. If `grill_attributes` fails with a retryable
+`upstream_error` (HTTP 503, schema unreadable), wait and retry; do not declare new names
+blind.
 
 ## Always report the project
 

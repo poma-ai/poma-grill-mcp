@@ -11,10 +11,11 @@
 //   npm run smoke
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface, type Interface } from "node:readline";
 
@@ -392,6 +393,8 @@ async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, 
 interface IngestCapture {
   remoteURL?: string;
   labels?: string;
+  // X-Attributes / X-Attribute-Schema of every /v3/grill/ingest request, in order.
+  attrHeaders: { attributes?: string; schema?: string }[];
   // Last /v3/grill/attributes request: method, Authorization, X-Project-ID.
   attributes?: { method?: string; auth?: string; projectID?: string };
 }
@@ -408,7 +411,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
     is_default: true,
   };
   // Records the headers the last /v3/grill/ingest request carried, for assertions.
-  const ingest: IngestCapture = {};
+  const ingest: IngestCapture = { attrHeaders: [] };
   const server: Server = createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://localhost");
     res.setHeader("content-type", "application/json");
@@ -438,6 +441,10 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
     if (u.pathname === "/v3/grill/ingest") {
       ingest.remoteURL = (req.headers["x-remote-url"] as string | undefined) ?? undefined;
       ingest.labels = (req.headers["x-labels"] as string | undefined) ?? undefined;
+      ingest.attrHeaders.push({
+        attributes: req.headers["x-attributes"] as string | undefined,
+        schema: req.headers["x-attribute-schema"] as string | undefined,
+      });
       if (scenario === "poma_proj_conflict") {
         res.statusCode = 409;
         res.end('{"code":409,"reason":"project_id_conflict","error":"X-Project-ID does not match the project this API key is bound to"}');
@@ -718,6 +725,99 @@ async function errorCodeTests(
       content.attributes.length === 0 &&
       (ingest.attributes as IngestCapture["attributes"])?.projectID === undefined;
     record("grill_attributes 503 → retryable upstream_error", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 13d. Typed attributes on ingest → X-Attributes / X-Attribute-Schema, keys
+  //      sorted, compact, non-ASCII escaped; labels keep working alongside.
+  {
+    ingest.attrHeaders.length = 0;
+    ingest.labels = undefined;
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      labels: { team: "eng" },
+      attributes: { year: 2024, region: "emea", city: "Z\u00fcrich", tags: ["a", "b"], gone: null },
+      attribute_schema: { notes: { type: "encrypted_text" } },
+    });
+    const h = ingest.attrHeaders[0];
+    const wantAttrs = '{"city":"Z\\u00fcrich","gone":null,"region":"emea","tags":["a","b"],"year":2024}';
+    const ok =
+      !isError &&
+      ingest.attrHeaders.length === 1 &&
+      h?.attributes === wantAttrs &&
+      h?.schema === '{"notes":{"type":"encrypted_text"}}' &&
+      ingest.labels === "team:eng";
+    record("ingest attributes → X-Attributes/X-Attribute-Schema + labels", ok, ok ? undefined : `${JSON.stringify(h)} labels=${ingest.labels} ${JSON.stringify(content)}`);
+  }
+  // 13e. No attributes → neither header is sent.
+  {
+    ingest.attrHeaders.length = 0;
+    await callTool(stubClient, "grill_ingest", { token: "scope1", url: "https://example.com/doc.pdf" });
+    const h = ingest.attrHeaders[0];
+    const ok = h !== undefined && h.attributes === undefined && h.schema === undefined;
+    record("ingest without attributes sends no attribute headers", ok, ok ? undefined : JSON.stringify(h));
+  }
+  // 13f. Validation → invalid_input, and nothing reaches the API.
+  {
+    const cases: { name: string; tool: string; args: Record<string, unknown>; want: string }[] = [
+      { name: "uppercase name", tool: "grill_ingest", args: { attributes: { DocYear: 2024 } }, want: 'attribute name "DocYear" must match' },
+      { name: "object value", tool: "grill_ingest_sync", args: { attributes: { x: { a: 1 } } }, want: 'attribute "x": value must be' },
+      { name: "over cap", tool: "grill_ingest", args: { attributes: { x: "y".repeat(2048) } }, want: "capped at 2048" },
+      // 400 × ü is 400 characters of input but 2400 once escaped: the cap counts the header.
+      { name: "cap counts escaped length", tool: "grill_ingest", args: { attributes: { x: "\u00fc".repeat(400) } }, want: "capped at 2048" },
+      { name: "too many names", tool: "grill_ingest", args: { attributes: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`a${i}`, 1])) }, want: "at most 64" },
+      { name: "schema bad name", tool: "grill_ingest", args: { attribute_schema: { Notes: { type: "encrypted_text" } } }, want: 'attribute_schema name "Notes"' },
+      { name: "schema missing type", tool: "grill_ingest", args: { attribute_schema: { notes: {} } }, want: 'attribute_schema "notes" must be an object' },
+    ];
+    for (const c of cases) {
+      ingest.attrHeaders.length = 0;
+      const { isError, content } = await callTool(stubClient, c.tool, { token: "scope1", url: "https://example.com/doc.pdf", ...c.args });
+      const ok = isError && content.code === "invalid_input" && (content.error ?? "").includes(c.want) && ingest.attrHeaders.length === 0;
+      record(`ingest attributes invalid: ${c.name}`, ok, ok ? undefined : `requests=${ingest.attrHeaders.length} ${JSON.stringify(content)}`);
+    }
+    // Exactly 2048 characters is accepted (the cap is inclusive).
+    ingest.attrHeaders.length = 0;
+    const exact = { x: "y".repeat(2048 - '{"x":""}'.length) };
+    const { isError } = await callTool(stubClient, "grill_ingest", { token: "scope1", url: "https://example.com/doc.pdf", attributes: exact });
+    const ok = !isError && ingest.attrHeaders[0]?.attributes?.length === 2048;
+    record("ingest attributes at exactly 2048 accepted", ok, ok ? undefined : String(ingest.attrHeaders[0]?.attributes?.length));
+  }
+  // 13g. Batch: attributes go on EVERY file; invalid attributes upload nothing.
+  {
+    const dir = mkdtempSync(join(tmpdir(), "grill-smoke-"));
+    const files = ["a.txt", "b.txt", "c.txt"].map((n) => {
+      const p = join(dir, n);
+      writeFileSync(p, `hello ${n}`);
+      return p;
+    });
+    try {
+      ingest.attrHeaders.length = 0;
+      const { isError, content } = await callTool(stubClient, "grill_ingest_batch", {
+        token: "scope1",
+        file_paths: files,
+        attributes: { batch: "q3", year: 2024 },
+        attribute_schema: { notes: { type: "encrypted_text" } },
+      });
+      let ok =
+        !isError &&
+        content.submitted_count === 3 &&
+        ingest.attrHeaders.length === 3 &&
+        ingest.attrHeaders.every(
+          (h) => h.attributes === '{"batch":"q3","year":2024}' && h.schema === '{"notes":{"type":"encrypted_text"}}',
+        );
+      record("batch attaches attributes to every file", ok, ok ? undefined : `${JSON.stringify(ingest.attrHeaders)} ${JSON.stringify(content)}`);
+
+      ingest.attrHeaders.length = 0;
+      const bad = await callTool(stubClient, "grill_ingest_batch", { token: "scope1", file_paths: files, attributes: { "doc-year": 2024 } });
+      ok =
+        bad.isError &&
+        bad.content.code === "invalid_input" &&
+        ingest.attrHeaders.length === 0 &&
+        Array.isArray(bad.content.results) &&
+        bad.content.results.length === 0;
+      record("batch invalid attributes → invalid_input, nothing uploaded", ok, ok ? undefined : `requests=${ingest.attrHeaders.length} ${JSON.stringify(bad.content)}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
   // 14. jobs_status surfaces the gateway grill object per result, normalized to
   //     the exact shape the Go implementation emits (see

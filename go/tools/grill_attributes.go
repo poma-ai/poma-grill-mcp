@@ -13,12 +13,6 @@ import (
 
 // -- Grill Attributes ------------------------------------------------
 
-// attributesReuseGuidance is appended to every ingest tool description. An
-// attribute name, once declared, is permanent for the project and counts
-// against its cap, so an agent that invents `doc_year` next to an existing
-// `year` burns a slot forever and splits the filterable data in two.
-const attributesReuseGuidance = " Typed attributes: before attaching any attribute to a document, call grill_attributes and reuse an existing name and type where one fits; declare a new name only when none does — names are permanent per project and count against max_names."
-
 // grillAttributesDefaultNote is used when the gateway omits its own note.
 const grillAttributesDefaultNote = "Reuse an existing attribute name and type where one fits; a name, once declared, is permanent and counts against max_names."
 
@@ -64,7 +58,7 @@ var grillAttributesTool = &mcp.Tool{
 		ReadOnlyHint:  true,
 		OpenWorldHint: boolPtr(true),
 	},
-	Description:  "List the typed document attributes already declared in the project: each attribute's name and type, plus max_names (the per-project cap on distinct names). Call this BEFORE attaching attributes at ingest: reuse an existing name and type where one fits (do not invent `doc_year` when `year` exists) and declare a new name only when none fits — a name, once declared, is permanent and counts against max_names. Also call it before building grill_search attribute_filters, to learn which names exist and which type (and so which operators) each has; a filter on a name not listed here matches nothing. The response includes a `scope` object identifying the project — tell the user which project the list belongs to." + errorHandlingGuidance,
+	Description:  "List the typed document attributes already declared in the project: each attribute's name and type, plus max_names (the per-project cap on distinct names). Call this BEFORE passing `attributes` to grill_ingest / grill_ingest_sync / grill_ingest_batch: reuse an existing name and type where one fits (do not invent `doc_year` when `year` exists) and declare a new name only when none fits — a name, once declared, is permanent and counts against max_names. Also call it before building grill_search attribute_filters, to learn which names exist and which type (and so which operators) each has; a filter on a name not listed here matches nothing. The response includes a `scope` object identifying the project — tell the user which project the list belongs to." + errorHandlingGuidance,
 	InputSchema:  grillAttributesInputSchema,
 	OutputSchema: grillAttributesOutputSchema,
 }

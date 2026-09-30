@@ -6,7 +6,7 @@ Ingest documents into the [POMA Grill](https://poma-ai.com) context engine and r
 
 ## Implementations
 
-This repo ships two implementations of the same MCP tool surface. Pick whichever fits your install path — both expose the same six tools (`grill_ingest`, `grill_ingest_sync`, `grill_ingest_resume`, `grill_ingest_batch`, `grill_jobs_status`, `grill_search`) and the same `-input`/`-http` flags, against the same backend.
+This repo ships two implementations of the same MCP tool surface. Pick whichever fits your install path — both expose the same ten tools (`grill_explain`, `grill_ingest`, `grill_ingest_sync`, `grill_ingest_resume`, `grill_ingest_batch`, `grill_jobs_status`, `grill_search`, `grill_docs_list`, `grill_attributes`, `grill_projects`) and the same `-input`/`-http` flags, against the same backend.
 
 | | Source | README | Distribution | Status |
 |---|---|---|---|---|
@@ -174,7 +174,7 @@ Ingest ~/docs/spec.pdf into POMA Grill, then search it for authentication requir
 | `grill_ingest_batch` | Upload up to 50 files with controlled concurrency (default 5, max 10). Returns `job_ids` immediately after uploads complete; use `grill_jobs_status` to monitor. |
 | `grill_jobs_status` | Get current status snapshots for up to 50 jobs in one call. No streaming. |
 | `grill_search` | Hybrid search returning concatenated context text for RAG. Set `doc_filter` (= `job_id`, or `grill.doc_id` on a dedup hit) to restrict to one document. |
-| `grill_attributes` | Typed attribute names already declared in the project, with their types and `max_names` (the per-project cap). Call before attaching attributes at ingest — reuse an existing name and type where one fits; names are permanent — and before building `attribute_filters` for `grill_search`. |
+| `grill_attributes` | Typed attribute names already declared in the project, with their types and `max_names` (the per-project cap). Call before passing `attributes` to an ingest tool — reuse an existing name and type where one fits; names are permanent — and before building `attribute_filters` for `grill_search`. |
 
 ### Dedup and re-ingest
 
@@ -196,7 +196,9 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 | `file_base64` | string | one-of | Standard base64 of the file bytes; fine for small files. |
 | `url` | string | one-of | Remote URL the **POMA Grill server** fetches and ingests. The MCP itself does not download it. |
 | `filename` | string | no | Original basename (e.g. `report.pdf`). With `file_path`, defaults to the path basename; otherwise inferred from bytes when possible. |
-| `labels` | object | no | Optional `{key: value}` labels attached to the document (sent as the `X-Labels` header). Avoid `:` and `,` in keys/values. |
+| `labels` | object | no | **Legacy — being retired in favour of `attributes`; prefer attributes for new work.** Optional `{key: value}` labels attached to the document (sent as the `X-Labels` header). Avoid `:` and `,` in keys/values. |
+| `attributes` | object | no | Typed document attributes, `{name: value}`; a value is a string, number, boolean, an array of those, or `null`. Call `grill_attributes` first and reuse an existing name and type where one fits. Names must match `^[a-z0-9_]{1,64}$`, are permanent per project and count against `max_names`. Sent as the `X-Attributes` header: at most 64 names and 2048 characters of compact JSON — larger input is refused with `invalid_input`, never truncated. |
+| `attribute_schema` | object | no | Type declarations, `{name: {"type": "<POMA type>"}}`, only where the value cannot say the type: `encrypted_text` must **always** be declared (undeclared, a new name is stored as a plain string), and `datetime` for a new name. Sent as `X-Attribute-Schema`, same 2048-character cap. |
 | `token` | string | no | API key — omit if `POMA_API_KEY` is set on the server process |
 
 **`file_path` notes**
@@ -230,6 +232,8 @@ Result count is bounded server-side by relevance and a token budget — there is
 |----------|------|----------|-------------|
 | `file_paths` | array of string | yes | Up to 50 paths readable by the MCP server process. |
 | `concurrency` | integer | no | Upload concurrency (default 5, max 10). Use `1` on free-tier accounts. |
+| `attributes` | object | no | Same as on `grill_ingest`; attached to **every** file in the batch. Validated once before any upload — an invalid set fails the whole batch with `invalid_input` and uploads nothing. |
+| `attribute_schema` | object | no | Same as on `grill_ingest`; applies to every file. |
 | `token` | string | no | API key |
 
 Returns `{results, submitted_count, failed_count, quota_exceeded_count}`. `quota_exceeded` entries (HTTP 403 from the queue) are retryable once running jobs finish.

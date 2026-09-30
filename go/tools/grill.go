@@ -75,6 +75,8 @@ var grillIngestInputSchema = &jsonschema.Schema{
 			AdditionalProperties: &jsonschema.Schema{Type: "string"},
 			Description:          ingestLabelsDescription,
 		},
+		"attributes":       ingestAttributesSchema(),
+		"attribute_schema": ingestAttributeSchemaSchema(),
 		"token": {
 			Type:        "string",
 			Description: "POMA API JWT. Usually not needed — the server inherits the token from the Authorization header in the MCP client config or the POMA_API_KEY env var. Only pass explicitly to override.",
@@ -87,8 +89,6 @@ var grillIngestInputSchema = &jsonschema.Schema{
 // Node schema (schemas/tools.json). Keep byte-identical — the Go↔Node tools/list
 // parity check depends on it.
 const ingestURLDescription = "Remote URL for the POMA Grill server to fetch and ingest. Mutually exclusive with file_path/file_base64. The MCP does not download it — the server fetches the URL."
-
-const ingestLabelsDescription = "Optional key:value labels to attach to the ingested document, e.g. {\"team\":\"eng\"}. Sent as the X-Labels header. Avoid ':' and ',' in keys or values (used as delimiters)."
 
 // serializeLabels renders ingest labels as the X-Labels header value: "key:value"
 // pairs with keys sorted for a deterministic header, joined by ",". Keys that are
@@ -173,8 +173,12 @@ type GrillIngestInput struct {
 	URL        string            `json:"url,omitempty"`
 	Filename   string            `json:"filename,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
-	Token      string            `json:"token,omitempty"`
-	ProjectID  string            `json:"project_id,omitempty"`
+	// Attributes / AttributeSchema stay raw so numbers survive exactly;
+	// encodeIngestAttributes validates and renders them.
+	Attributes      map[string]json.RawMessage `json:"attributes,omitempty"`
+	AttributeSchema map[string]json.RawMessage `json:"attribute_schema,omitempty"`
+	Token           string                     `json:"token,omitempty"`
+	ProjectID       string                     `json:"project_id,omitempty"`
 }
 
 type GrillIngestOutput struct {
@@ -203,7 +207,11 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 	}
 
 	projectID := getProjectID(input.ProjectID)
-	labels := serializeLabels(input.Labels)
+	attrHdr, schemaHdr, aerr := encodeIngestAttributes(input.Attributes, input.AttributeSchema)
+	if aerr != nil {
+		return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "%s", aerr.Error())}, nil
+	}
+	meta := ingestHeaders{Labels: serializeLabels(input.Labels), Attributes: attrHdr, AttributeSchema: schemaHdr}
 	c := grillClient(token)
 
 	var body []byte
@@ -216,7 +224,7 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 			return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "provide only one of url, file_path, or file_base64")}, nil
 		}
 		slog.Info("grill ingest", "url", input.URL)
-		body, st, err = grillIngestURL(c, input.URL, projectID, labels)
+		body, st, err = grillIngestURL(c, input.URL, projectID, meta)
 	} else {
 		data, filename, perr := resolveGrillIngestPayload(input)
 		if perr != nil {
@@ -224,7 +232,7 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 			return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "%s", perr.Error())}, nil
 		}
 		slog.Info("grill ingest", "filename", filename, "bytes", len(data))
-		body, st, err = grillIngestData(c, data, filename, projectID, labels)
+		body, st, err = grillIngestData(c, data, filename, projectID, meta)
 	}
 	if err != nil {
 		// Network/client error reaching the Grill API — transient, retryable.
@@ -993,7 +1001,9 @@ var grillIngestBatchInputSchema = &jsonschema.Schema{
 			Type:        "integer",
 			Description: "Upload concurrency (default 5, max 10). Use 1 for free-tier accounts.",
 		},
-		"project_id": projectIDSchema,
+		"attributes":       ingestAttributesSchema(),
+		"attribute_schema": ingestAttributeSchemaSchema(),
+		"project_id":       projectIDSchema,
 	},
 	Required: []string{"file_paths"},
 }
@@ -1030,6 +1040,9 @@ type GrillIngestBatchInput struct {
 	Token       string   `json:"token,omitempty"`
 	Concurrency int      `json:"concurrency,omitempty"`
 	ProjectID   string   `json:"project_id,omitempty"`
+	// Attributes / AttributeSchema apply to EVERY file in the batch.
+	Attributes      map[string]json.RawMessage `json:"attributes,omitempty"`
+	AttributeSchema map[string]json.RawMessage `json:"attribute_schema,omitempty"`
 }
 
 type GrillIngestBatchResult struct {
@@ -1070,6 +1083,14 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 		concurrency = 10
 	}
 
+	// Validate once, before any upload: a bad attribute set fails the whole
+	// batch rather than every file individually.
+	attrHdr, schemaHdr, aerr := encodeIngestAttributes(input.Attributes, input.AttributeSchema)
+	if aerr != nil {
+		return errResult(), GrillIngestBatchOutput{Results: []GrillIngestBatchResult{}, GrillError: errOut(CodeInvalidInput, "%s", aerr.Error())}, nil
+	}
+	meta := ingestHeaders{Attributes: attrHdr, AttributeSchema: schemaHdr}
+
 	projectID := getProjectID(input.ProjectID)
 	results := make([]GrillIngestBatchResult, len(input.FilePaths))
 	sem := make(chan struct{}, concurrency)
@@ -1090,7 +1111,7 @@ func GrillIngestBatch(ctx context.Context, _ *mcp.CallToolRequest, input GrillIn
 				return
 			}
 
-			body, st, err := grillIngestData(c, data, filename, projectID, "")
+			body, st, err := grillIngestData(c, data, filename, projectID, meta)
 			if err != nil {
 				// Network/client error reaching the Grill API — transient, retryable.
 				results[i] = GrillIngestBatchResult{FilePath: fp, GrillError: GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)}}

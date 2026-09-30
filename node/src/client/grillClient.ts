@@ -1,4 +1,5 @@
 import { apiBaseURL } from "../common.js";
+import { applyIngestHeaders, type IngestHeaders } from "./ingestAttributes.js";
 
 export interface GrillResponse {
   body: Uint8Array;
@@ -52,7 +53,7 @@ export class GrillClient {
     return { body: buf, status: res.status };
   }
 
-  async ingestRaw(data: Uint8Array, filename: string, labels = ""): Promise<GrillResponse> {
+  async ingestRaw(data: Uint8Array, filename: string, meta: IngestHeaders = {}): Promise<GrillResponse> {
     const url = joinURL(apiBaseURL(), "/grill/ingest");
     const safeName = sanitizeFilename(filename);
     // BodyInit accepts BufferSource; Uint8Array is allowed in Node 20+ fetch.
@@ -63,7 +64,7 @@ export class GrillClient {
       Authorization: `Bearer ${this.token}`,
     };
     if (this.projectID !== "") headers["X-Project-ID"] = this.projectID;
-    if (labels !== "") headers["X-Labels"] = labels;
+    applyIngestHeaders(headers, meta);
     const res = await fetch(url, { method: "POST", headers, body: data });
     const buf = new Uint8Array(await res.arrayBuffer());
     return { body: buf, status: res.status };
@@ -72,14 +73,14 @@ export class GrillClient {
   // ingestRemoteURL sends POST /grill/ingest with an X-Remote-URL header and no
   // body: the POMA Grill server fetches and ingests the remote URL. Returns the
   // same { job_id } shape as ingestRaw.
-  async ingestRemoteURL(remoteURL: string, labels = ""): Promise<GrillResponse> {
+  async ingestRemoteURL(remoteURL: string, meta: IngestHeaders = {}): Promise<GrillResponse> {
     const url = joinURL(apiBaseURL(), "/grill/ingest");
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       "X-Remote-URL": remoteURL,
     };
     if (this.projectID !== "") headers["X-Project-ID"] = this.projectID;
-    if (labels !== "") headers["X-Labels"] = labels;
+    applyIngestHeaders(headers, meta);
     const res = await fetch(url, { method: "POST", headers });
     const buf = new Uint8Array(await res.arrayBuffer());
     return { body: buf, status: res.status };
