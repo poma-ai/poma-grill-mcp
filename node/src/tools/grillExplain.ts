@@ -1,19 +1,20 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { successResult } from "../common.js";
+import { consoleUrl, successResult } from "../common.js";
 
+// {{CONSOLE_URL}} is replaced with consoleUrl() when served.
 const explanation = `# POMA Grill
 
 POMA Grill is a managed context engine. Ingest any document, then search it with natural language.
 
 ## Quick Start
 
-1. Get API key from https://console.poma-ai.com
+1. Get API key from {{CONSOLE_URL}}
 2. \`grill_ingest_sync\` with your file → get \`job_id\`
 3. \`grill_search\` with your question (optionally set \`doc_filter\` to the \`job_id\`)
 
 ## Getting an API Key
 
-1. Go to https://console.poma-ai.com
+1. Go to {{CONSOLE_URL}}
 2. Create a new Grill project
 3. Copy the generated API key
 4. Set it as POMA_API_KEY environment variable, or pass it as the \`token\` argument to any tool
@@ -73,5 +74,5 @@ export async function grillExplain(
   args: Record<string, unknown>,
   _ctx: import("../common.js").ToolContext,
 ): Promise<CallToolResult> {
-  return successResult({ explanation });
+  return successResult({ explanation: explanation.replaceAll("{{CONSOLE_URL}}", consoleUrl()) });
 }
