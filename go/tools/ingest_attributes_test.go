@@ -86,6 +86,14 @@ func TestEncodeIngestAttributesHeaderValues(t *testing.T) {
 
 func TestEncodeIngestAttributesValidation(t *testing.T) {
 	long := strings.Repeat("x", attributesHeaderMaxLen)
+	// 30 names of 40 characters: the attributes fit in 2048, the schema
+	// declaring each as encrypted_text does not.
+	bigAttrs, bigSchema := map[string]json.RawMessage{}, map[string]json.RawMessage{}
+	for i := 0; i < 30; i++ {
+		n := fmt.Sprintf("n%039d", i)
+		bigAttrs[n] = json.RawMessage(`"v"`)
+		bigSchema[n] = json.RawMessage(`{"type":"encrypted_text"}`)
+	}
 	many := map[string]json.RawMessage{}
 	for i := 0; i < attributesMaxNames+1; i++ {
 		many[fmt.Sprintf("a%03d", i)] = json.RawMessage(`1`)
@@ -106,7 +114,17 @@ func TestEncodeIngestAttributesValidation(t *testing.T) {
 		{"schema without attributes", nil, rawMap(t, `{"notes":{"type":"encrypted_text"}}`), `attribute_schema declares "notes", but attributes has no value for it`},
 		{"mixed string and int", rawMap(t, `{"x":["a",1]}`), nil, `attribute "x": mixed element types in array [int string]`},
 		{"mixed int and float", rawMap(t, `{"x":[1,2.5]}`), nil, `attribute "x": mixed element types in array [float int]`},
-		{"mixed int and float literal 2.0", rawMap(t, `{"x":[1,2.0]}`), nil, `mixed element types in array [float int]`},
+		// 1.0 reaches grill as 1 after the gateway's float64 round trip.
+		{"integral float literal is an int", rawMap(t, `{"x":[1.0,2.5]}`), nil, `mixed element types in array [float int]`},
+		{"non-finite number", rawMap(t, `{"x":1e400}`), nil, `attribute "x": 1e400 is not a finite number`},
+		{"non-finite in array", rawMap(t, `{"x":[1.5,-1e400]}`), nil, `-1e400 is not a finite number`},
+		{"unknown declared type", rawMap(t, `{"x":"a"}`), rawMap(t, `{"x":{"type":"text"}}`), `attribute_schema "x": unknown type "text"; known: []bool, []datetime, []encrypted_text, []float, []int, []string, bool, datetime, encrypted_text, float, int, string`},
+		{"unknown array type", rawMap(t, `{"x":[]}`), rawMap(t, `{"x":{"type":"[]text"}}`), `unknown type "[]text"`},
+		{"datetime garbage", rawMap(t, `{"d":"not-a-date"}`), rawMap(t, `{"d":{"type":"datetime"}}`), `attribute "d": "not-a-date" is not a valid datetime; use RFC3339 (2024-05-01T12:00:00Z) or YYYY-MM-DD`},
+		{"datetime impossible day", rawMap(t, `{"d":"2024-02-30"}`), rawMap(t, `{"d":{"type":"datetime"}}`), `is not a valid datetime; use RFC3339`},
+		{"datetime missing timezone", rawMap(t, `{"d":"2024-05-01T12:00:00"}`), rawMap(t, `{"d":{"type":"datetime"}}`), `is not a valid datetime; use RFC3339`},
+		{"datetime hour 24", rawMap(t, `{"d":"2024-05-01T24:00:00Z"}`), rawMap(t, `{"d":{"type":"datetime"}}`), `is not a valid datetime; use RFC3339`},
+		{"[]datetime with one bad", rawMap(t, `{"d":["2024-01-02","2024-1-2"]}`), rawMap(t, `{"d":{"type":"[]datetime"}}`), `"2024-1-2" is not a valid datetime`},
 		{"mixed bool and string", rawMap(t, `{"x":[true,"a"]}`), nil, `mixed element types`},
 		{"undeclared empty array", rawMap(t, `{"x":[]}`), nil, `attribute "x": an empty array has no type to infer; declare it in attribute_schema`},
 		{"empty array declared scalar", rawMap(t, `{"x":[]}`), rawMap(t, `{"x":{"type":"string"}}`), `attribute "x" is declared "string", which needs a scalar`},
@@ -114,7 +132,8 @@ func TestEncodeIngestAttributesValidation(t *testing.T) {
 		{"declared []int with string", rawMap(t, `{"x":[1,"a"]}`), rawMap(t, `{"x":{"type":"[]int"}}`), `attribute "x": element "a" is not a int`},
 		{"declared int with float", rawMap(t, `{"x":2.5}`), rawMap(t, `{"x":{"type":"int"}}`), `element 2.5 is not a int`},
 		{"declared encrypted_text with number", rawMap(t, `{"x":5}`), rawMap(t, `{"x":{"type":"encrypted_text"}}`), `element 5 is not a encrypted_text`},
-		{"int beyond 2^53", rawMap(t, `{"x":9007199254740993}`), nil, `outside the JSON-safe integer range`},
+		// 2^53+1 rounds to 2^53 in the gateway's float64 and passes grill; 2^53+2 does not.
+		{"int beyond 2^53", rawMap(t, `{"x":9007199254740994}`), nil, `outside the JSON-safe integer range`},
 		{"array over 64 elements", rawMap(t, `{"x":[`+strings.TrimSuffix(strings.Repeat("1,", 65), ",")+`]}`), nil, `65 elements exceeds the cap of 64`},
 		{"top-level null", rawMap(t, `{"gone":null}`), nil, `attribute "gone": value must be`},
 		{"too many names", many, nil, "at most 64"},
@@ -122,7 +141,7 @@ func TestEncodeIngestAttributesValidation(t *testing.T) {
 		{"schema bad name", nil, rawMap(t, `{"Notes":{"type":"encrypted_text"}}`), `attribute_schema name "Notes"`},
 		{"schema missing type", nil, rawMap(t, `{"notes":{}}`), `attribute_schema "notes" must be an object`},
 		{"schema not object", nil, rawMap(t, `{"notes":"encrypted_text"}`), `attribute_schema "notes" must be an object`},
-		{"schema over cap", rawMap(t, `{"notes":"x"}`), rawMap(t, `{"notes":{"type":"`+long+`"}}`), "X-Attribute-Schema header is capped at 2048"},
+		{"schema over cap", bigAttrs, bigSchema, "X-Attribute-Schema header is capped at 2048"},
 	}
 	if len(many) != attributesMaxNames+1 {
 		t.Fatalf("test setup: %d names", len(many))
@@ -279,7 +298,11 @@ func TestEncodeIngestAttributesAcceptsGrillLegalShapes(t *testing.T) {
 	}{
 		{"declared empty array", `{"tags":[]}`, `{"tags":{"type":"[]string"}}`, `{"tags":[]}`, `{"tags":{"type":"[]string"}}`},
 		{"float declared over ints", `{"w":[1,2.5]}`, `{"w":{"type":"[]float"}}`, `{"w":[1,2.5]}`, `{"w":{"type":"[]float"}}`},
-		{"uniform floats", `{"w":[1.0,2.5]}`, ``, `{"w":[1.0,2.5]}`, ``},
+		{"uniform floats", `{"w":[1.5,2.5]}`, ``, `{"w":[1.5,2.5]}`, ``},
+		{"integral floats are ints", `{"w":[1.0,2]}`, ``, `{"w":[1.0,2]}`, ``},
+		{"float intent kept by declaring []float", `{"w":[1.0,2.5]}`, `{"w":{"type":"[]float"}}`, `{"w":[1.0,2.5]}`, `{"w":{"type":"[]float"}}`},
+		{"int at 2^53+1 rounds to 2^53", `{"n":9007199254740993}`, ``, `{"n":9007199254740993}`, ``},
+		{"RFC3339 variants and plain dates", `{"d":["2024-05-01","2024-05-01T12:00:00Z","2024-05-01T12:00:00.123456Z","2024-05-01T12:00:00+05:30","2024-05-01T12:00:00.5-08:00"]}`, `{"d":{"type":"[]datetime"}}`, `{"d":["2024-05-01","2024-05-01T12:00:00Z","2024-05-01T12:00:00.123456Z","2024-05-01T12:00:00+05:30","2024-05-01T12:00:00.5-08:00"]}`, `{"d":{"type":"[]datetime"}}`},
 		{"int at -2^53", `{"n":-9007199254740992}`, ``, `{"n":-9007199254740992}`, ``},
 		{"64 elements", `{"x":` + sixtyFour + `}`, ``, `{"x":` + sixtyFour + `}`, ``},
 	}

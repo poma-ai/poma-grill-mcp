@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"math/big"
+	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -28,11 +30,26 @@ const (
 
 var attributeNameRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 
+// grillTypeNameList is grill's TYPES (poma-grill attribute_schema.py), sorted
+// as grill lists them in its own "unknown type" error.
+var grillTypeNameList = []string{
+	"[]bool", "[]datetime", "[]encrypted_text", "[]float", "[]int", "[]string",
+	"bool", "datetime", "encrypted_text", "float", "int", "string",
+}
+
+var grillTypeNames = func() map[string]bool {
+	m := make(map[string]bool, len(grillTypeNameList))
+	for _, t := range grillTypeNameList {
+		m[t] = true
+	}
+	return m
+}()
+
 // ingestAttributesDescription and ingestAttributeSchemaDescription are shared
 // verbatim with the Node schema (schemas/tools.json). Keep byte-identical.
-const ingestAttributesDescription = "Optional typed document attributes: a flat object of name → value, where a value is a string, number, boolean, or an array of those (never null), e.g. {\"region\":\"emea\",\"year\":2024}. An array must be non-empty and hold one kind of element — all strings, all ints, all floats or all booleans (1 and 2.5 do not mix); an empty array is accepted only when attribute_schema declares its array type (e.g. \"[]string\"). Call grill_attributes first and reuse an existing name and type where one fits. Names must match ^[a-z0-9_]{1,64}$ and are permanent per project, counting against max_names; string, number and boolean values (and arrays of them) are typed by their value — declare encrypted_text or datetime in attribute_schema. Filter on them later with grill_search attribute_filters. Sent as the X-Attributes header: at most 64 names and 2048 characters of compact JSON; larger input is refused with invalid_input, never truncated."
+const ingestAttributesDescription = "Optional typed document attributes: a flat object of name → value, where a value is a string, number, boolean, or an array of those (never null), e.g. {\"region\":\"emea\",\"year\":2024}. An array must be non-empty and hold one kind of element — all strings, all ints, all floats or all booleans (1 and 2.5 do not mix). A whole number such as 1.0 counts as an int, so to keep a float type for whole numbers declare float or []float in attribute_schema; an empty array is accepted only when attribute_schema declares its array type (e.g. \"[]string\"). Call grill_attributes first and reuse an existing name and type where one fits. Names must match ^[a-z0-9_]{1,64}$ and are permanent per project, counting against max_names; string, number and boolean values (and arrays of them) are typed by their value — declare encrypted_text or datetime in attribute_schema. Filter on them later with grill_search attribute_filters. Sent as the X-Attributes header: at most 64 names and 2048 characters of compact JSON; larger input is refused with invalid_input, never truncated."
 
-const ingestAttributeSchemaDescription = "Optional type declarations, only for names present in attributes (a declaration for any other name is refused), shaped {\"name\": {\"type\": \"<POMA type>\"}}, e.g. {\"case_notes\":{\"type\":\"encrypted_text\"}}. Declare only where the value cannot say the type: encrypted_text must ALWAYS be declared (an undeclared new name is stored as a plain string), datetime when introducing a new datetime name, and the array type (e.g. \"[]string\") of an empty array. A declaration that conflicts with the type already in force for that name is rejected. Sent as the X-Attribute-Schema header, same 2048-character cap."
+const ingestAttributeSchemaDescription = "Optional type declarations, only for names present in attributes (a declaration for any other name is refused), shaped {\"name\": {\"type\": \"<POMA type>\"}}, where the type is one of string, int, float, bool, datetime, encrypted_text or their [] array forms, e.g. {\"case_notes\":{\"type\":\"encrypted_text\"}}. Declare only where the value cannot say the type: encrypted_text must ALWAYS be declared (an undeclared new name is stored as a plain string), datetime when introducing a new datetime name (values in RFC3339, e.g. \"2024-05-01T12:00:00Z\", or YYYY-MM-DD), and the array type (e.g. \"[]string\") of an empty array. A declaration that conflicts with the type already in force for that name is rejected. Sent as the X-Attribute-Schema header, same 2048-character cap."
 
 // Legacy labels: kept working unchanged, but steered toward attributes.
 const ingestLabelsDescription = "Legacy — being retired in favour of attributes; prefer attributes for new work. Optional key:value labels to attach to the ingested document, e.g. {\"team\":\"eng\"}. Sent as the X-Labels header. Avoid ':' and ',' in keys or values (used as delimiters)."
@@ -108,6 +125,9 @@ func encodeIngestAttributes(attrs map[string]json.RawMessage, schema map[string]
 		if err := json.Unmarshal(schema[name], &d); err != nil || d.Type == nil || strings.TrimSpace(*d.Type) == "" {
 			return "", "", fmt.Errorf("attribute_schema %q must be an object like {\"type\": \"encrypted_text\"}", name)
 		}
+		if !grillTypeNames[*d.Type] {
+			return "", "", fmt.Errorf("attribute_schema %q: unknown type %q; known: %s", name, *d.Type, strings.Join(grillTypeNameList, ", "))
+		}
 		declTypes[name] = *d.Type
 	}
 
@@ -175,9 +195,10 @@ const (
 )
 
 // attributeKind is the kind grill infers for one scalar: "string", "bool",
-// "int" or "float". A number is a float when its JSON literal has a '.', 'e'
-// or 'E' — Python's json module reads 2.0 as float and 2 as int, and the
-// literal is what is sent.
+// "int" or "float" — judged on the value grill actually receives. The gateway
+// decodes attribute numbers as float64 and the queue re-encodes them, so 1.0
+// reaches grill as 1 (an int) and only a non-integral value stays a float;
+// Go's encoder switches to exponent form at 1e21, which Python reads as float.
 func attributeKind(v any) string {
 	switch x := v.(type) {
 	case string:
@@ -185,10 +206,14 @@ func attributeKind(v any) string {
 	case bool:
 		return "bool"
 	case json.Number:
-		if strings.ContainsAny(string(x), ".eE") {
-			return "float"
+		f, err := strconv.ParseFloat(string(x), 64)
+		if err != nil || math.IsInf(f, 0) {
+			return "" // non-finite; refused before kinds are compared
 		}
-		return "int"
+		if f == math.Trunc(f) && math.Abs(f) < 1e21 {
+			return "int"
+		}
+		return "float"
 	}
 	return ""
 }
@@ -198,6 +223,15 @@ func checkAttributeValue(name string, v any, declared string) error {
 	elems := []any{v}
 	if isArr {
 		elems = arr
+	}
+	// grill: "attribute values must be finite numbers". JSON cannot spell NaN,
+	// but a literal like 1e400 overflows float64 to +Inf.
+	for _, e := range elems {
+		if n, ok := e.(json.Number); ok {
+			if f, err := strconv.ParseFloat(string(n), 64); err != nil || math.IsInf(f, 0) {
+				return fmt.Errorf("attribute %q: %s is not a finite number", name, n)
+			}
+		}
 	}
 
 	var base string
@@ -246,6 +280,9 @@ func checkAttributeValue(name string, v any, declared string) error {
 			if !ok {
 				return fmt.Errorf("attribute %q: element %s is not a %s (declared %q)", name, string(mustJSON(e)), base, declared)
 			}
+			if base == "datetime" && !datetimeValid(e.(string)) {
+				return fmt.Errorf("attribute %q: %s is not a valid datetime; use RFC3339 (2024-05-01T12:00:00Z) or YYYY-MM-DD", name, string(mustJSON(e)))
+			}
 		}
 	}
 
@@ -253,19 +290,28 @@ func checkAttributeValue(name string, v any, declared string) error {
 		return fmt.Errorf("attribute %q: %d elements exceeds the cap of %d", name, len(arr), attributesMaxArrayElems)
 	}
 	if base == "int" {
-		limit := big.NewInt(attributesJSONSafeInt)
+		// Compared after the gateway's float64 round trip, which is the value
+		// grill range-checks.
 		for _, e := range elems {
-			n, ok := e.(json.Number)
-			if !ok {
-				continue
-			}
-			bi, ok := new(big.Int).SetString(string(n), 10)
-			if ok && bi.CmpAbs(limit) > 0 {
-				return fmt.Errorf("attribute %q: %s is outside the JSON-safe integer range (±2^53)", name, n)
+			if n, ok := e.(json.Number); ok {
+				if f, _ := strconv.ParseFloat(string(n), 64); math.Abs(f) > attributesJSONSafeInt {
+					return fmt.Errorf("attribute %q: %s is outside the JSON-safe integer range (±2^53)", name, n)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// datetimeValid accepts RFC3339 (with a Z or ±hh:mm offset, optional
+// fractional seconds) or a plain YYYY-MM-DD date. Deliberately narrower than
+// grill's datetime.fromisoformat: exotic ISO forms are refused here.
+func datetimeValid(s string) bool {
+	if _, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return true
+	}
+	_, err := time.Parse("2006-01-02", s)
+	return err == nil
 }
 
 func mustJSON(v any) []byte {

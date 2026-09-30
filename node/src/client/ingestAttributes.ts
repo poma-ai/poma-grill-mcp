@@ -10,6 +10,12 @@ export const attributesHeaderMaxLen = 2048;
 export const attributesMaxNames = 64;
 const attributeNameRe = /^[a-z0-9_]{1,64}$/;
 
+// grill's TYPES (poma-grill attribute_schema.py), sorted as grill lists them.
+const grillTypeNames = [
+  "[]bool", "[]datetime", "[]encrypted_text", "[]float", "[]int", "[]string",
+  "bool", "datetime", "encrypted_text", "float", "int", "string",
+];
+
 /** Optional per-document metadata headers of a grill ingest; empty = not sent. */
 export interface IngestHeaders {
   labels?: string; // X-Labels
@@ -58,14 +64,32 @@ function compactASCIIJSON(obj: Record<string, unknown>): string {
 const attributesMaxArrayElems = 64; // grill ATTR_MAX_ARRAY_ELEMS default (config.toml attr_max_array_elems)
 const attributesJSONSafeInt = 2 ** 53; // grill _JSON_SAFE_INT: |int| must be <= 2^53
 
-// The kind grill infers for one scalar. A number is a float when its JSON
-// literal — what JSON.stringify sends — has a '.', 'e' or 'E' (Python reads
-// 2.5 and 1e+21 as float, 2 as int).
+// The kind grill infers for one scalar — judged on the value grill receives.
+// The gateway decodes numbers as float64 and re-encodes them, so 1.0 reaches
+// grill as 1 (an int) and only a non-integral value stays a float; the encoder
+// switches to exponent form at 1e21, which Python reads as float. (JSON.parse
+// here has already made 1.0 into 1, so this matches what is sent.)
 function attributeKind(v: unknown): string {
   if (typeof v === "string") return "string";
   if (typeof v === "boolean") return "bool";
-  if (typeof v === "number") return /[.eE]/.test(JSON.stringify(v)) ? "float" : "int";
+  if (typeof v === "number") return Number.isInteger(v) && Math.abs(v) < 1e21 ? "int" : "float";
   return "";
+}
+
+// RFC3339 (Z or ±hh:mm offset, optional fractional seconds) or a plain
+// YYYY-MM-DD date; mirrors the Go check. Deliberately narrower than grill's
+// datetime.fromisoformat: exotic ISO forms are refused here.
+const datetimeRe =
+  /^(\d{4})-(\d{2})-(\d{2})(?:T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d))?$/;
+
+function datetimeValid(s: string): boolean {
+  const m = datetimeRe.exec(s);
+  if (!m || Number.isNaN(Date.parse(s))) return false;
+  // Round-trip y-m-d so an impossible date such as 2024-02-30 is refused.
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const dt = new Date(0);
+  dt.setUTCFullYear(y, mo - 1, d);
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
 }
 
 function checkAttributeValue(name: string, v: unknown, declared: string | undefined): void {
@@ -104,6 +128,9 @@ function checkAttributeValue(name: string, v: unknown, declared: string | undefi
       else if (base === "datetime" || base === "encrypted_text") ok = k === "string";
       if (!ok) {
         throw new Error(`attribute ${q}: element ${JSON.stringify(e)} is not a ${base} (declared ${JSON.stringify(declared)})`);
+      }
+      if (base === "datetime" && !datetimeValid(e as string)) {
+        throw new Error(`attribute ${q}: ${JSON.stringify(e)} is not a valid datetime; use RFC3339 (2024-05-01T12:00:00Z) or YYYY-MM-DD`);
       }
     }
   }
@@ -150,6 +177,9 @@ export function encodeIngestAttributes(
       if (typeof t !== "string" || t.trim() === "") {
         throw new Error(`attribute_schema ${JSON.stringify(name)} must be an object like {"type": "encrypted_text"}`);
       }
+      if (!grillTypeNames.includes(t)) {
+        throw new Error(`attribute_schema ${JSON.stringify(name)}: unknown type ${JSON.stringify(t)}; known: ${grillTypeNames.join(", ")}`);
+      }
       declTypes.set(name, t);
     }
   }
@@ -165,6 +195,14 @@ export function encodeIngestAttributes(
     for (const name of names) {
       if (!attributeNameRe.test(name)) {
         throw new Error(`attribute name ${JSON.stringify(name)} must match ^[a-z0-9_]{1,64}$ (lowercase letters, digits, underscore)`);
+      }
+      // grill: "attribute values must be finite numbers". JSON.parse turns an
+      // overflowing literal such as 1e400 into Infinity.
+      const raw = attrsArg[name];
+      for (const e of Array.isArray(raw) ? raw : [raw]) {
+        if (typeof e === "number" && !Number.isFinite(e)) {
+          throw new Error(`attribute ${JSON.stringify(name)}: ${String(e)} is not a finite number`);
+        }
       }
       if (!validAttributeValue(attrsArg[name])) {
         throw new Error(

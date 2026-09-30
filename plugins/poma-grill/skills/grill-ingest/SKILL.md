@@ -69,14 +69,18 @@ Steps:
    `max_names`; it cannot be renamed or freed. New names must match `^[a-z0-9_]{1,64}$`.
 3. **Pass the values in `attributes`.** Strings, numbers, booleans and their arrays are
    typed by value. An array must be non-empty and of one kind — all strings, all ints, all
-   floats or all booleans (`[1, 2.5]` mixes int and float and is refused). An empty array
+   floats or all booleans (`[1, 2.5]` mixes int and float and is refused). A whole number
+   such as `1.0` counts as an int; to keep a float type for whole numbers, declare `float`
+   or `[]float`. An empty array
    is accepted only when `attribute_schema` declares its array type, e.g.
    `{"tags": {"type": "[]string"}}`.
 4. **Declare a type in `attribute_schema` only when needed**, and only for a name you also
-   pass in `attributes`. `encrypted_text` must
-   **always** be declared — undeclared, a new name is stored as a plain string. Declare
-   `datetime` when introducing a new datetime name. A declaration that conflicts with the
-   type already in force for that name is rejected.
+   pass in `attributes`. `encrypted_text` must **always** be declared — undeclared, a new
+   name is stored as a plain string. Declare `datetime` when introducing a new datetime
+   name; its values must be RFC3339 with a timezone (`"2024-05-01T12:00:00Z"`,
+   `"...+02:00"`) or a plain `YYYY-MM-DD` date. Types are `string`, `int`, `float`, `bool`,
+   `datetime`, `encrypted_text` and their `[]` array forms; anything else is refused. A
+   declaration that conflicts with the type already in force for that name is rejected.
 
 For `grill_ingest_batch`, `attributes` and `attribute_schema` apply to **every** file in the
 batch; to give files different attributes, ingest them separately.

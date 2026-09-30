@@ -95,6 +95,24 @@ class MCPClient {
     });
   }
 
+  // requestRaw sends params as a literal JSON string, for inputs JSON.stringify
+  // cannot produce (an overflowing number such as 1e400).
+  async requestRaw(method: string, paramsJSON: string): Promise<JSONRPCResponse> {
+    const id = this.nextId++;
+    const payload = `{"jsonrpc":"2.0","id":${id},"method":${JSON.stringify(method)},"params":${paramsJSON}}`;
+    return new Promise((resolveResponse, rejectResponse) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        rejectResponse(new Error(`timeout waiting for response to ${method} (id=${id})`));
+      }, 10_000);
+      this.pending.set(id, (resp) => {
+        clearTimeout(timer);
+        resolveResponse(resp);
+      });
+      this.proc.stdin.write(payload + "\n");
+    });
+  }
+
   notify(method: string, params?: unknown): void {
     const payload = JSON.stringify({ jsonrpc: "2.0", method, ...(params !== undefined ? { params } : {}) });
     this.proc.stdin.write(payload + "\n");
@@ -781,6 +799,35 @@ async function errorCodeTests(
       h?.schema === '{"tags":{"type":"[]string"},"w":{"type":"[]float"}}';
     record("declared empty array + []float over ints accepted", ok, ok ? undefined : `${JSON.stringify(h)} ${JSON.stringify(content)}`);
   }
+  // 13d4. Non-finite number (1e400 → Infinity after JSON.parse) is refused.
+  {
+    ingest.attrHeaders.length = 0;
+    const resp = await stubClient.requestRaw(
+      "tools/call",
+      '{"name":"grill_ingest","arguments":{"token":"scope1","url":"https://example.com/doc.pdf","attributes":{"x":1e400}}}',
+    );
+    const result = resp.result as { isError?: boolean; structuredContent?: EnvelopeContent } | undefined;
+    const c = result?.structuredContent ?? {};
+    const ok = result?.isError === true && c.code === "invalid_input" && (c.error ?? "").includes("is not a finite number") && ingest.attrHeaders.length === 0;
+    record("ingest attributes invalid: non-finite 1e400", ok, ok ? undefined : JSON.stringify(c));
+  }
+  // 13d5. Accepted: float intent kept by declaring []float; RFC3339 variants and plain dates.
+  {
+    ingest.attrHeaders.length = 0;
+    const dates = ["2024-05-01", "2024-05-01T12:00:00Z", "2024-05-01T12:00:00.123456Z", "2024-05-01T12:00:00+05:30", "2024-05-01T12:00:00.5-08:00"];
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      attributes: { w: [1.0, 2.5], d: dates },
+      attribute_schema: { w: { type: "[]float" }, d: { type: "[]datetime" } },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok =
+      !isError &&
+      h?.attributes === JSON.stringify({ d: dates, w: [1, 2.5] }) &&
+      h?.schema === '{"d":{"type":"[]datetime"},"w":{"type":"[]float"}}';
+    record("declared []float over 1.0 and RFC3339/plain-date []datetime accepted", ok, ok ? undefined : `${JSON.stringify(h)} ${JSON.stringify(content)}`);
+  }
   // 13e. No attributes → neither header is sent.
   {
     ingest.attrHeaders.length = 0;
@@ -842,6 +889,44 @@ async function errorCodeTests(
       },
       { name: "int beyond 2^53", tool: "grill_ingest", args: { attributes: { x: 2 ** 54 } }, want: "outside the JSON-safe integer range" },
       { name: "array over 64 elements", tool: "grill_ingest", args: { attributes: { x: Array(65).fill(1) } }, want: "65 elements exceeds the cap of 64" },
+      // 1.0 is 1 on the wire (and after the gateway's float64 round trip): an int.
+      { name: "integral float is an int", tool: "grill_ingest", args: { attributes: { x: [1.0, 2.5] } }, want: 'attribute "x": mixed element types in array [float int]' },
+      {
+        name: "unknown declared type",
+        tool: "grill_ingest",
+        args: { attributes: { x: "a" }, attribute_schema: { x: { type: "text" } } },
+        want: 'attribute_schema "x": unknown type "text"; known: []bool, []datetime, []encrypted_text, []float, []int, []string, bool, datetime, encrypted_text, float, int, string',
+      },
+      {
+        name: "datetime garbage",
+        tool: "grill_ingest",
+        args: { attributes: { d: "not-a-date" }, attribute_schema: { d: { type: "datetime" } } },
+        want: 'attribute "d": "not-a-date" is not a valid datetime; use RFC3339 (2024-05-01T12:00:00Z) or YYYY-MM-DD',
+      },
+      {
+        name: "datetime impossible day",
+        tool: "grill_ingest",
+        args: { attributes: { d: "2024-02-30" }, attribute_schema: { d: { type: "datetime" } } },
+        want: "is not a valid datetime; use RFC3339",
+      },
+      {
+        name: "datetime missing timezone",
+        tool: "grill_ingest",
+        args: { attributes: { d: "2024-05-01T12:00:00" }, attribute_schema: { d: { type: "datetime" } } },
+        want: "is not a valid datetime; use RFC3339",
+      },
+      {
+        name: "datetime hour 24",
+        tool: "grill_ingest",
+        args: { attributes: { d: "2024-05-01T24:00:00Z" }, attribute_schema: { d: { type: "datetime" } } },
+        want: "is not a valid datetime; use RFC3339",
+      },
+      {
+        name: "[]datetime with one bad",
+        tool: "grill_ingest",
+        args: { attributes: { d: ["2024-01-02", "2024-1-2"] }, attribute_schema: { d: { type: "[]datetime" } } },
+        want: '"2024-1-2" is not a valid datetime',
+      },
       { name: "schema missing type", tool: "grill_ingest", args: { attribute_schema: { notes: {} } }, want: 'attribute_schema "notes" must be an object' },
     ];
     for (const c of cases) {
