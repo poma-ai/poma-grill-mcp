@@ -118,3 +118,24 @@ jobs:
         git-token: ${{ secrets.POMA_DEPLOY_REPO_TOKEN }}
         git-user: "gen-poma"
         git-email: "gen-poma@poma-ai.com"
+
+    # The same image also runs as index4ai-mcp (mcp(-dev).index4.ai; the MCP
+    # accepts only tokens for its own host, so it is a second deployment in poma-deploy).
+    # Its app name is not its image name and the action above has no image input, so run
+    # the action's own image with -image. Pinned to the digest of repo-services v14; the
+    # token goes in as GITHUB_TOKEN (the binary's fallback), not argv, which it logs.
+    # Runs when the step above failed too: on a re-run that step has nothing to commit
+    # for the same tag and exits 2, which would otherwise skip this one forever.
+    - name: Deploy Image (index4ai MCP)
+      if: ${{ !cancelled() && steps.build-and-push.outcome == 'success' }}
+      env:
+        GIT_TOKEN: ${{ secrets.POMA_DEPLOY_REPO_TOKEN }}
+      run: >-
+        docker run --rm -e GITHUB_TOKEN="$GIT_TOKEN"
+        -v "$GITHUB_WORKSPACE:/github/workspace" -w /github/workspace
+        ghcr.io/nice-pink/repo-services-deploy@sha256:6465c04aad930baa1410c1c192efe8dfc820dfe89681371ddb16e8368be00f41
+        -app=index4ai-mcp -image=poma-grill-mcp
+        -env=${{ env.ENV }} -base=base/apps "-pathScheme={base}/{app}/{env}"
+        -srcPath=./poma-deploy-index4ai -tag=${{ steps.commit.outputs.short }}
+        -gitUrl=https://github.com/poma-ai/poma-deploy.git
+        -gitUser=gen-poma -gitEmail=gen-poma@poma-ai.com -gitPush
