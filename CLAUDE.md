@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`poma-grill-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server wrapping the POMA Grill context engine API. It lets IDEs (Claude Desktop, Cursor, etc.) ingest documents and perform semantic search via MCP tools. Active tools include `grill_ingest` (+ variants), `grill_search`, `grill_jobs_status`, and `grill_docs_list`.
+`poma-grill-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server wrapping the POMA Grill context engine API. It lets IDEs (Claude Desktop, Cursor, etc.) ingest documents and perform semantic search via MCP tools. Active tools include `grill_ingest` (+ variants), `grill_search`, `grill_jobs_status`, `grill_docs_list`, `grill_attributes`, `grill_projects`, and `grill_explain`.
 
 ## Repo layout
 
@@ -34,7 +34,7 @@ POMA_API_KEY=<key> bash go/test.sh
 MCP_VERBOSE=1 POMA_API_KEY=<key> bash go/test.sh
 ```
 
-There are no unit tests — `test.sh` is the test harness (Python-based MCP client that spawns the binary).
+Unit tests: `cd go && go test ./...` (Go) and `cd node && npm run smoke` (Node, against an offline stub API).
 
 ## Architecture
 

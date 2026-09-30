@@ -15,6 +15,7 @@ import {
 } from "../common.js";
 import { GrillClient, parseJob } from "../client/grillClient.js";
 import { parseLabelsArg, resolveIngestPayload, serializeLabels } from "../client/ingestPayload.js";
+import { encodeIngestAttributes, type IngestHeaders } from "../client/ingestAttributes.js";
 import { lastGrillOutcome, streamJobStatus, type JobStatusFull } from "../client/statusStream.js";
 import { resolveScope, scopeFields } from "../scope.js";
 
@@ -28,7 +29,12 @@ export async function grillIngestSync(
   }
 
   const url = typeof args.url === "string" ? args.url.trim() : "";
-  const labels = serializeLabels(parseLabelsArg(args.labels));
+  let meta: IngestHeaders;
+  try {
+    meta = { labels: serializeLabels(parseLabelsArg(args.labels)), ...encodeIngestAttributes(args.attributes, args.attribute_schema) };
+  } catch (err) {
+    return codedError(ErrorCode.InvalidInput, err instanceof Error ? err.message : String(err));
+  }
   const projectID = getProjectID(args.project_id);
   const client = new GrillClient(token, projectID);
 
@@ -42,7 +48,7 @@ export async function grillIngestSync(
     if (typeof args.file_base64 === "string" && args.file_base64 !== "") {
       return codedError(ErrorCode.InvalidInput, "provide only one of url, file_path, or file_base64");
     }
-    ingestRes = await client.ingestRemoteURL(url, labels);
+    ingestRes = await client.ingestRemoteURL(url, meta);
   } else {
     let resolved;
     try {
@@ -54,7 +60,7 @@ export async function grillIngestSync(
     } catch (err) {
       return codedError(ErrorCode.InvalidInput, err instanceof Error ? err.message : String(err));
     }
-    ingestRes = await client.ingestRaw(resolved.data, resolved.filename, labels);
+    ingestRes = await client.ingestRaw(resolved.data, resolved.filename, meta);
   }
 
   const authErr = interpretAuthError(args.token, ingestRes.status, ingestRes.body, "grill ingest");

@@ -21,7 +21,7 @@ import (
 
 // grillIngestData sends POST /grill/ingest with raw file bytes.
 // Placeholder for (*client.Client).GrillIngestData(data []byte, filename string) ([]byte, int, error).
-func grillIngestData(c *client.Client, data []byte, filename string, projectID string, labels string) ([]byte, int, error) {
+func grillIngestData(c *client.Client, data []byte, filename string, projectID string, meta ingestHeaders) ([]byte, int, error) {
 	name := grillSanitizeFilename(filename)
 	headers := map[string]string{
 		"Content-Disposition": `attachment; filename="` + name + `"`,
@@ -31,25 +31,21 @@ func grillIngestData(c *client.Client, data []byte, filename string, projectID s
 	if projectID != "" {
 		headers["X-Project-ID"] = projectID
 	}
-	if labels != "" {
-		headers["X-Labels"] = labels
-	}
+	meta.apply(headers)
 	return c.Do(http.MethodPost, "/grill/ingest", bytes.NewReader(data), headers)
 }
 
 // grillIngestURL sends POST /grill/ingest with an X-Remote-URL header and no
 // body: the POMA Grill server fetches and ingests the remote URL. Returns the
 // same {job_id} shape as grillIngestData.
-func grillIngestURL(c *client.Client, remoteURL, projectID, labels string) ([]byte, int, error) {
+func grillIngestURL(c *client.Client, remoteURL, projectID string, meta ingestHeaders) ([]byte, int, error) {
 	headers := map[string]string{
 		"X-Remote-URL": remoteURL,
 	}
 	if projectID != "" {
 		headers["X-Project-ID"] = projectID
 	}
-	if labels != "" {
-		headers["X-Labels"] = labels
-	}
+	meta.apply(headers)
 	return c.Do(http.MethodPost, "/grill/ingest", nil, headers)
 }
 
@@ -104,6 +100,18 @@ func grillListDocs(c *client.Client, projectID, cursor string) ([]byte, int, err
 		endpoint += "&cursor=" + url.QueryEscape(cursor)
 	}
 	return c.Do(http.MethodGet, endpoint, nil, headers)
+}
+
+// grillListAttributes sends GET /grill/attributes: the typed attribute names
+// the project has declared, with their types and the per-project name cap.
+// Same auth and X-Project-ID handling as grillListDocs.
+// Placeholder for (*client.Client).GrillListAttributes() ([]byte, int, error).
+func grillListAttributes(c *client.Client, projectID string) ([]byte, int, error) {
+	var headers map[string]string
+	if projectID != "" {
+		headers = map[string]string{"X-Project-ID": projectID}
+	}
+	return c.Do(http.MethodGet, "/grill/attributes", nil, headers)
 }
 
 // grillListProjects sends GET /projects (optionally filtered by product).
