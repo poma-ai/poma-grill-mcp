@@ -36,7 +36,18 @@ func TestConsoleURLInUserMessages(t *testing.T) {
 				t.Fatal(err)
 			}
 			msgs["explain"] = out.Explanation
+			// Exact text around the URL: every verb is %s, so a swapped Sprintf
+			// argument would still contain the URL somewhere and go vet can't see it.
+			around := map[string]string{
+				"402":           "Visit " + tt.want + " to check your usage",
+				"401":           "Generate a valid API key at " + tt.want + " and set it",
+				"403 protected": "Generate one at " + tt.want + " in the project settings",
+				"explain":       "Get API key from " + tt.want + "\n",
+			}
 			for k, m := range msgs {
+				if !strings.Contains(m, around[k]) {
+					t.Errorf("%s message lacks %q: %q", k, around[k], m)
+				}
 				if !strings.Contains(m, tt.want) {
 					t.Errorf("%s message does not contain %q: %q", k, tt.want, m)
 				}

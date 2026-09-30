@@ -61,7 +61,7 @@ The server has two modes, selected at startup:
 
 **Authentication**: Per-call `token` argument takes precedence over `POMA_API_KEY` env var (resolved in `go/tools/common.go:getToken`).
 
-**API base URLs** can be overridden via `POMA_API_BASE_URL` and `POMA_STATUS_API_BASE_URL` env vars. The console URL in user-facing messages comes from `POMA_CONSOLE_URL` (default `https://console.poma-ai.com`) through `consoleURL()`; never hardcode it.
+**API base URLs** can be overridden via `POMA_API_BASE_URL` and `POMA_STATUS_API_BASE_URL` env vars. The console URL in user-facing messages comes from `POMA_CONSOLE_URL` (default `https://console.poma-ai.com`) through `consoleURL()` in Go and `consoleUrl()` in `node/`; never hardcode it.
 
 ## Key flags
 
@@ -77,4 +77,4 @@ Push to the `release` branch to trigger the CI pipeline (`.github/workflows/rele
 
 The canonical company domain is **`poma-ai.com`** (e.g. `api.poma-ai.com`, `storage.poma-ai.com`, emails `@poma-ai.com`; GitHub org `poma-ai`). **Never write `poma.ai`** — it is not our domain and has shipped broken links (Slack notifier, MCP examples). Always `poma-ai.com`; fix any `poma.ai` on sight.
 
-The POMA web console is **`console.poma-ai.com`**. **Never write `app.poma-ai.com`** — that URL does not exist. All user-facing links (API key generation, plan upgrades, project settings) point to `https://console.poma-ai.com`; fix any `app.poma-ai.com` on sight.
+The POMA web console is **`console.poma-ai.com`**. **Never write `app.poma-ai.com`** — that URL does not exist. All user-facing links (API key generation, plan upgrades, project settings) point to `https://console.poma-ai.com` unless `POMA_CONSOLE_URL` overrides it (the index4ai deployment points at `console.index4.ai`); fix any `app.poma-ai.com` on sight.

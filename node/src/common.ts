@@ -24,6 +24,18 @@ const DEFAULT_STATUS_PREFIX = "/status/v1";
 
 const VERSION_SUFFIX_RE = /\/v[0-9]+$/;
 
+const DEFAULT_CONSOLE_URL = "https://console.poma-ai.com";
+
+/**
+ * The web console that user-facing messages send people to (API keys, usage,
+ * project settings). POMA_CONSOLE_URL overrides it for another brand's
+ * deployment; mirrors consoleURL() in the Go server.
+ */
+export function consoleUrl(): string {
+  const v = (process.env.POMA_CONSOLE_URL ?? "").trim();
+  return v !== "" ? v.replace(/\/+$/, "") : DEFAULT_CONSOLE_URL;
+}
+
 export function getToken(arg: unknown): string {
   if (typeof arg === "string" && arg !== "") return arg;
   return process.env.POMA_API_KEY ?? "";
@@ -260,7 +272,7 @@ export function interpretAuthError(
     return {
       message:
         `${operation}: credits exceeded (HTTP 402). The account associated with the token provided via ${src} has no remaining credits. ` +
-        `Visit https://console.poma-ai.com to check your usage and upgrade your plan.`,
+        `Visit ${consoleUrl()} to check your usage and upgrade your plan.`,
       code: ErrorCode.PaymentRequired,
     };
   }
@@ -269,7 +281,7 @@ export function interpretAuthError(
     return {
       message:
         `${operation}: authentication failed (HTTP 401). The token provided via ${src} is invalid, expired, or malformed. ` +
-        `Generate a valid API key at https://console.poma-ai.com and set it as POMA_API_KEY or pass it as the token argument.`,
+        `Generate a valid API key at ${consoleUrl()} and set it as POMA_API_KEY or pass it as the token argument.`,
       code: ErrorCode.AuthExpired,
     };
   }
@@ -285,7 +297,7 @@ export function interpretAuthError(
   const text = new TextDecoder("utf-8").decode(body).trim();
   const projectProtectedMsg =
     `${operation}: this project is protected (HTTP 403). The token provided via ${src} is an account-level key, ` +
-    `but this project requires a project API key. Generate one at https://console.poma-ai.com in the project settings, ` +
+    `but this project requires a project API key. Generate one at ${consoleUrl()} in the project settings, ` +
     `or set the project to unprotected.`;
   const forbiddenMsg =
     `${operation}: access denied (HTTP 403). The token provided via ${src} does not have access to this project — ` +
