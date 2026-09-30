@@ -120,22 +120,22 @@ jobs:
         git-email: "gen-poma@poma-ai.com"
 
     # The same image also runs as poma-grill-mcp-index4ai (mcp(-dev).index4.ai; the MCP
-    # accepts only tokens for its own host, so it is a second deployment). Its app name
-    # is not its image name, and the action above has no image input and passes its
-    # namespace default as a literal '""', which defeats poma-deploy's
-    # .ops-repo-exceptional-apps.yaml lookup. So run the action's own image directly
-    # with -image. Fresh clone: the step above already pushed its commit.
+    # accepts only tokens for its own host, so it is a second deployment in poma-deploy).
+    # Its app name is not its image name and the action above has no image input, so run
+    # the action's own image with -image. Pinned to the digest of repo-services v14; the
+    # token goes in as GITHUB_TOKEN (the binary's fallback), not argv, which it logs.
+    # Runs when the step above failed too: on a re-run that step has nothing to commit
+    # for the same tag and exits 2, which would otherwise skip this one forever.
     - name: Deploy Image (index4ai MCP)
-      if: github.event_name != 'pull_request'
+      if: ${{ !cancelled() && steps.build-and-push.outcome == 'success' }}
       env:
-        TAG: ${{ steps.commit.outputs.short }}
         GIT_TOKEN: ${{ secrets.POMA_DEPLOY_REPO_TOKEN }}
       run: >-
-        docker run --rm -e TAG -e GIT_TOKEN
+        docker run --rm -e GITHUB_TOKEN="$GIT_TOKEN"
         -v "$GITHUB_WORKSPACE:/github/workspace" -w /github/workspace
-        --entrypoint /bin/sh ghcr.io/nice-pink/repo-services-deploy:latest -c
-        '/app/bin/deploy -app=poma-grill-mcp-index4ai -image=poma-grill-mcp
+        ghcr.io/nice-pink/repo-services-deploy@sha256:6465c04aad930baa1410c1c192efe8dfc820dfe89681371ddb16e8368be00f41
+        -app=poma-grill-mcp-index4ai -image=poma-grill-mcp
         -env=${{ env.ENV }} -base=base/apps "-pathScheme={base}/{app}/{env}"
-        -srcPath=./poma-deploy-index4ai -tag="$TAG"
-        -gitUrl=https://github.com/poma-ai/poma-deploy.git -gitToken="$GIT_TOKEN"
-        -gitUser=gen-poma -gitEmail=gen-poma@poma-ai.com -gitPush'
+        -srcPath=./poma-deploy-index4ai -tag=${{ steps.commit.outputs.short }}
+        -gitUrl=https://github.com/poma-ai/poma-deploy.git
+        -gitUser=gen-poma -gitEmail=gen-poma@poma-ai.com -gitPush
