@@ -160,6 +160,7 @@ Ingest ~/docs/spec.pdf into POMA Grill, then search it for authentication requir
 | `grill_ingest_batch` | Upload up to 50 files with controlled concurrency (default 5, max 10). Returns `job_ids` immediately after uploads complete; use `grill_jobs_status` to monitor. |
 | `grill_jobs_status` | Get current status snapshots for up to 50 jobs in one call. No streaming. |
 | `grill_search` | Hybrid search returning concatenated context text for RAG. Set `doc_filter` (= `job_id`, or `grill.doc_id` on a dedup hit) to restrict to one document. |
+| `grill_attributes` | Typed attribute names already declared in the project, with their types and `max_names`. Call before attaching attributes at ingest (reuse an existing name and type; names are permanent) and before building `grill_search` `attribute_filters`. |
 
 ### `grill_ingest` / `grill_ingest_sync` arguments
 

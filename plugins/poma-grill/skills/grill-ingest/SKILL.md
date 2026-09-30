@@ -45,6 +45,21 @@ Optional on all three: `filename` (basename shown in the UI; inferred from `file
 content when omitted) and `labels`, a flat `{key: value}` map sent as the `X-Labels`
 header. Avoid `:` and `,` in label keys and values — they are the wire delimiters.
 
+## Typed attributes: call `grill_attributes` first
+
+Before attaching any typed attribute to a document (whichever path sets it), **call
+`grill_attributes`** and reuse what is already there. It returns every attribute name the
+project has declared, each with its type, plus `max_names`, the project's cap on distinct
+names.
+
+- Reuse an existing name and type where one fits. If `year` exists, do not invent
+  `doc_year`: the second name splits the data, so a filter on either one misses half the
+  documents.
+- Declare a new name only when nothing listed fits. A name, once declared, is **permanent**
+  for the project and counts against `max_names`; it cannot be renamed or freed.
+- If `grill_attributes` fails with a retryable `upstream_error` (HTTP 503, schema
+  unreadable), wait and retry — do not declare new names blind.
+
 ## Always report the project
 
 Ingest responses carry a `scope` object naming the project the document landed in. Tell

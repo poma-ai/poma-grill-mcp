@@ -23,6 +23,7 @@ const NODE_ROOT = resolve(HERE, "..");
 const BINARY = resolve(NODE_ROOT, "dist", "index.js");
 
 const EXPECTED_TOOLS = [
+  "grill_attributes",
   "grill_docs_list",
   "grill_explain",
   "grill_ingest",
@@ -391,6 +392,8 @@ async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, 
 interface IngestCapture {
   remoteURL?: string;
   labels?: string;
+  // Last /v3/grill/attributes request: method, Authorization, X-Project-ID.
+  attributes?: { method?: string; auth?: string; projectID?: string };
 }
 
 function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; close: () => Promise<void> }> {
@@ -487,6 +490,30 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       res.end();
       return;
     }
+    // Attributes — capture method/auth/project header; "attrs503" = unreadable schema.
+    if (u.pathname === "/v3/grill/attributes") {
+      ingest.attributes = {
+        method: req.method,
+        auth: req.headers.authorization,
+        projectID: (req.headers["x-project-id"] as string | undefined) ?? undefined,
+      };
+      if (scenario === "attrs503") {
+        res.statusCode = 503;
+        res.end('{"error":"attribute schema unavailable"}');
+        return;
+      }
+      res.end(
+        JSON.stringify({
+          attributes: [
+            { name: "region", type: "string" },
+            { name: "notes", type: "encrypted_text" },
+          ],
+          max_names: 64,
+          note: "Reuse an existing attribute name and type where one fits; a name, once declared, is permanent and counts against max_names.",
+        }),
+      );
+      return;
+    }
     // Search.
     if (u.pathname === "/v3/grill/search" || u.pathname === "/v3/grill/searchInDoc") {
       res.end('{"context":"some context","assets":null}');
@@ -515,6 +542,9 @@ interface EnvelopeContent {
   scope?: { project_name?: string; hint?: string; is_default?: boolean; source?: string };
   projects?: string;
   documents?: unknown[];
+  attributes?: { name?: string; type?: string }[];
+  max_names?: number;
+  note?: string;
   results?: { code?: string; retryable?: boolean; error?: string; grill?: unknown }[];
   submitted_count?: number;
   job_id?: string;
@@ -652,6 +682,42 @@ async function errorCodeTests(
     const { isError, content } = await callTool(noTokenClient, "grill_docs_list", {});
     const ok = isError && content.code === "missing_token" && Array.isArray(content.documents) && content.documents.length === 0;
     record("docs_list error output has documents: []", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 13b. grill_attributes: GET /grill/attributes with Bearer + X-Project-ID,
+  //      renders names/types, max_names, note and scope.
+  {
+    ingest.attributes = undefined;
+    const { isError, content } = await callTool(stubClient, "grill_attributes", { token: "scope1", project_id: "p1" });
+    // Cast: TS narrowed the field to undefined after the reset above, but the stub mutates it.
+    const a = ingest.attributes as IngestCapture["attributes"];
+    const ok =
+      !isError &&
+      a?.method === "GET" &&
+      a?.auth === "Bearer scope1" &&
+      a?.projectID === "p1" &&
+      JSON.stringify(content.attributes) ===
+        JSON.stringify([
+          { name: "region", type: "string" },
+          { name: "notes", type: "encrypted_text" },
+        ]) &&
+      content.max_names === 64 &&
+      (content.note ?? "").includes("permanent") &&
+      content.scope?.project_name === "Default Workspace" &&
+      content.error === undefined;
+    record("grill_attributes request + rendering", ok, ok ? undefined : `${JSON.stringify(a)} ${JSON.stringify(content)}`);
+  }
+  // 13c. grill_attributes 503 (unreadable schema) → retryable upstream_error, attributes: [].
+  {
+    const { isError, content } = await callTool(stubClient, "grill_attributes", { token: "attrs503" });
+    const ok =
+      isError &&
+      content.code === "upstream_error" &&
+      content.retryable === true &&
+      (content.error ?? "").includes("HTTP 503") &&
+      Array.isArray(content.attributes) &&
+      content.attributes.length === 0 &&
+      (ingest.attributes as IngestCapture["attributes"])?.projectID === undefined;
+    record("grill_attributes 503 → retryable upstream_error", ok, ok ? undefined : JSON.stringify(content));
   }
   // 14. jobs_status surfaces the gateway grill object per result, normalized to
   //     the exact shape the Go implementation emits (see

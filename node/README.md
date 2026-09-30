@@ -126,6 +126,7 @@ Six tools, matching the Go implementation:
 | `grill_ingest_batch` | Upload up to 50 files with concurrency control (default 5, max 10). |
 | `grill_jobs_status` | Snapshot status for up to 50 jobs in one call. Each result carries `grill?` on a dedup or replacement outcome. |
 | `grill_search` | Hybrid search returning concatenated context for RAG. `doc_filter` (= `job_id`, or `grill.doc_id` on a dedup hit) restricts to one doc. |
+| `grill_attributes` | Typed attribute names already declared in the project, with their types and `max_names`. Call before attaching attributes at ingest (reuse an existing name and type; names are permanent) and before building `grill_search` `attribute_filters`. |
 
 See the top-level [README](https://github.com/poma-ai/poma-grill-mcp#tools) for full argument tables.
 

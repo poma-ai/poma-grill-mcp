@@ -26,6 +26,7 @@ server decides how much to return based on relevance and budget.
 |---|---|
 | `query` | The natural-language question. Required. |
 | `doc_filter` | Restrict to a single document. The value is the `job_id` returned by ingest, which is normally the same string as `doc_id` — but when the ingest result or `grill_jobs_status` carried a `grill` object, use `grill.doc_id` instead: on a dedup hit the two differ and the `job_id` matches no indexed document. |
+| `attribute_filters` | Filter by typed attributes set at ingest (`attr`, `op`, `value`; clauses AND together). Check names and types with `grill_attributes` first — see below. |
 | `exclude_doc_ids` | Up to 100 doc ids to leave out. In an agent loop, pass the docs you have already cited so each round surfaces something new. |
 | `return_assets` | Include asset references in the context. |
 | `return_page_images` | Include page image references. |
@@ -50,6 +51,16 @@ projects. Check with `grill_projects`, then re-run with the right `project_id`.
   turn "the Q1 report" into a `doc_filter` without asking the user for an id.
 - `grill_projects` — the projects reachable by the current credential, and which one is
   the default.
+
+## Filtering by attribute
+
+Before building `attribute_filters`, call **`grill_attributes`** to learn which attribute
+names the project actually has and the type of each. Use the exact name it returns: a
+filter on a name the project has never used matches **nothing** rather than being ignored,
+so a guessed `doc_year` where the project stores `year` silently empties the result. The
+type decides which operators work (`encrypted_text`, for instance, matches exact tokens
+only — no stemming, no partial words); an operator the type does not offer returns an
+error naming the ones it does.
 
 ## Query phrasing
 

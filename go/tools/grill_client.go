@@ -106,6 +106,18 @@ func grillListDocs(c *client.Client, projectID, cursor string) ([]byte, int, err
 	return c.Do(http.MethodGet, endpoint, nil, headers)
 }
 
+// grillListAttributes sends GET /grill/attributes: the typed attribute names
+// the project has declared, with their types and the per-project name cap.
+// Same auth and X-Project-ID handling as grillListDocs.
+// Placeholder for (*client.Client).GrillListAttributes() ([]byte, int, error).
+func grillListAttributes(c *client.Client, projectID string) ([]byte, int, error) {
+	var headers map[string]string
+	if projectID != "" {
+		headers = map[string]string{"X-Project-ID": projectID}
+	}
+	return c.Do(http.MethodGet, "/grill/attributes", nil, headers)
+}
+
 // grillListProjects sends GET /projects (optionally filtered by product).
 func grillListProjects(c *client.Client, product string) ([]byte, int, error) {
 	p := "/projects"
