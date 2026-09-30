@@ -282,6 +282,7 @@ When `POMA_API_JWT_SECRET` is set, the MCP verifies incoming Bearer JWTs locally
 | `POMA_MCP_RESOURCE` | OAuth deployments | The MCP's own public URI (e.g. `https://mcp.grill.poma-ai.com/`). Used for `aud` validation and advertised in the protected-resource metadata. |
 | `POMA_API_BASE_URL` | Recommended | The api's base URL (e.g. `https://api.poma-ai.com`). Advertised in protected-resource metadata as the authorization server. Defaults to `https://api.poma-ai.com`. |
 | `POMA_MCP_PUBLIC_URL` | Recommended | The MCP's own public base URL. Used for the `resource` field in protected-resource metadata and the `WWW-Authenticate` challenge. Falls back to `http://localhost:<port>`. **Required behind a reverse proxy** — `X-Forwarded-Proto`/`X-Forwarded-Host` headers are not trusted (to prevent header-injection attacks). |
+| `POMA_CONSOLE_URL` | Other brands | The web console that tool messages send users to for API keys, usage and project settings. Defaults to `https://console.poma-ai.com`; the index4ai MCP sets `https://console.index4.ai`. |
 | `GRILL_TRUSTED_ORIGINS` | Browser clients only | Comma-separated origins (`scheme://host[:port]`) allowed to make cross-origin state-changing requests. See below. |
 
 **Cross-origin protection**

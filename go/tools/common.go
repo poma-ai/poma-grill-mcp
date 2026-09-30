@@ -16,6 +16,7 @@ import (
 
 const (
 	defaultAPIBaseURL    = "https://api.poma-ai.com"
+	defaultConsoleURL    = "https://console.poma-ai.com"
 	defaultVersionPrefix = "/v3"
 	defaultStatusPrefix  = "/status/v1"
 )
@@ -33,6 +34,16 @@ func apiBaseURL() string {
 		return strings.TrimRight(v, "/") + defaultVersionPrefix
 	}
 	return defaultAPIBaseURL + defaultVersionPrefix
+}
+
+// consoleURL is the web console that user-facing messages send people to (API keys,
+// usage, project settings). POMA_CONSOLE_URL overrides it for a deployment that serves
+// another brand: the index4ai MCP (mcp.index4.ai) points at console.index4.ai.
+func consoleURL() string {
+	if v := strings.TrimSpace(os.Getenv("POMA_CONSOLE_URL")); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return defaultConsoleURL
 }
 
 func statusAPIBaseURL() string {
@@ -253,16 +264,16 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 	if statusCode == http.StatusPaymentRequired {
 		return fmt.Sprintf(
 			"%s: credits exceeded (HTTP 402). The account associated with the token provided via %s has no remaining credits. "+
-				"Visit https://console.poma-ai.com to check your usage and upgrade your plan.",
-			operation, src,
+				"Visit %s to check your usage and upgrade your plan.",
+			operation, src, consoleURL(),
 		), CodePaymentRequired
 	}
 
 	if statusCode == http.StatusUnauthorized {
 		return fmt.Sprintf(
 			"%s: authentication failed (HTTP 401). The token provided via %s is invalid, expired, or malformed. "+
-				"Generate a valid API key at https://console.poma-ai.com and set it as POMA_API_KEY or pass it as the token argument.",
-			operation, src,
+				"Generate a valid API key at %s and set it as POMA_API_KEY or pass it as the token argument.",
+			operation, src, consoleURL(),
 		), CodeAuthExpired
 	}
 
@@ -282,9 +293,9 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 		code := strings.Trim(string(errResp.Code), `"`)
 		projectProtectedMsg := fmt.Sprintf(
 			"%s: this project is protected (HTTP 403). The token provided via %s is an account-level key, "+
-				"but this project requires a project API key. Generate one at https://console.poma-ai.com in the project settings, "+
+				"but this project requires a project API key. Generate one at %s in the project settings, "+
 				"or set the project to unprotected.",
-			operation, src,
+			operation, src, consoleURL(),
 		)
 		forbiddenMsg := fmt.Sprintf(
 			"%s: access denied (HTTP 403). The token provided via %s does not have access to this project — "+

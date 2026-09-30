@@ -61,7 +61,7 @@ The server has two modes, selected at startup:
 
 **Authentication**: Per-call `token` argument takes precedence over `POMA_API_KEY` env var (resolved in `go/tools/common.go:getToken`).
 
-**API base URLs** can be overridden via `POMA_API_BASE_URL` and `POMA_STATUS_API_BASE_URL` env vars.
+**API base URLs** can be overridden via `POMA_API_BASE_URL` and `POMA_STATUS_API_BASE_URL` env vars. The console URL in user-facing messages comes from `POMA_CONSOLE_URL` (default `https://console.poma-ai.com`) through `consoleURL()`; never hardcode it.
 
 ## Key flags
 
