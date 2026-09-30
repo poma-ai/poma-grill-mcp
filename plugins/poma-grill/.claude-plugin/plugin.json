@@ -1,6 +1,6 @@
 {
   "name": "poma-grill-mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "POMA Grill — ingest documents into the Grill context engine and run semantic search over them from any agent.",
   "author": {
     "name": "POMA AI",
