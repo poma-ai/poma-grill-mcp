@@ -41,7 +41,7 @@ For desktop hosts that support [MCP Bundles](https://github.com/modelcontextprot
    (or download it from a release).
 2. Open the `.mcpb` in your host (drag into Claude Desktop's **Settings → Extensions**).
 3. The host shows a config form — paste your **POMA API Key** into the (masked) field and enable.
-   The bundle targets the production API (`https://api.poma-ai.com`); to point at a different
+   The bundle targets the production API (`https://api.index4.ai`); to point at a different
    environment, run the server directly with `POMA_API_BASE_URL` set (see Environment variables).
 
 The host stores the API key in your OS keychain and passes it to the server as `POMA_API_KEY`
@@ -140,8 +140,8 @@ All read at runtime — nothing is baked in at build/publish time.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `POMA_API_KEY` | (unset) | API token. Fallback when a tool call doesn't pass an explicit `token`. Without it, every tool returns `"token is required …"`. |
-| `POMA_API_BASE_URL` | `https://api.poma-ai.com` | Override the API host. Auto-appends `/v3` unless the URL already ends in `/vN`. |
-| `POMA_STATUS_API_BASE_URL` | `https://api.poma-ai.com/status/v1` (or `${POMA_API_BASE_URL}/status/v1`) | Override the SSE status-stream host. Same versioning rule. |
+| `POMA_API_BASE_URL` | `https://api.index4.ai` | Override the API host. Only the origin is used: requests always go to `<origin>/index4ai/v1`, so a legacy `/v3` suffix is ignored. |
+| `POMA_STATUS_API_BASE_URL` | `https://api.index4.ai/status/v1` (or the `POMA_API_BASE_URL` origin + `/status/v1`) | Override the SSE status-stream URL. `/status/v1` is appended unless the value already ends in `/vN`. |
 | `GRILL_INGEST_ALLOWED_PREFIX` | (unset = no restriction) | Security guard for `file_path`. When set, ingest rejects any path that doesn't resolve (after symlink evaluation) under this directory. |
 | `GRILL_INGEST_MAX_BYTES` | `536870912` (512 MiB) | Max upload size in bytes. `0` = unlimited. Applied to both `file_path` and `file_base64`. |
 

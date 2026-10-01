@@ -22,7 +22,7 @@ func rawMap(t *testing.T, js string) map[string]json.RawMessage {
 	return m
 }
 
-// ingestCapture records the metadata headers of every /v3/grill/ingest request.
+// ingestCapture records the metadata headers of every /index4ai/v1/ingest request.
 type ingestCapture struct {
 	mu       sync.Mutex
 	requests []http.Header
@@ -39,13 +39,13 @@ func startIngestStub(t *testing.T) *ingestCapture {
 	capt := &ingestCapture{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v3/grill/ingest":
+		case "/index4ai/v1/ingest":
 			capt.mu.Lock()
 			capt.requests = append(capt.requests, r.Header.Clone())
 			capt.mu.Unlock()
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"job_id":"job-attr-1"}`))
-		case "/v3/projects":
+		case "/index4ai/v1/projects":
 			_, _ = w.Write([]byte(`[]`))
 		default:
 			w.WriteHeader(http.StatusNotFound)

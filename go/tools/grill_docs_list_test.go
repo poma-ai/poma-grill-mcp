@@ -237,10 +237,10 @@ func TestGrillDocsListAutoPaging(t *testing.T) {
 
 			requests := 0
 			mux := http.NewServeMux()
-			mux.HandleFunc("/v3/projects", func(w http.ResponseWriter, r *http.Request) {
+			mux.HandleFunc("/index4ai/v1/projects", func(w http.ResponseWriter, r *http.Request) {
 				_, _ = w.Write([]byte("[]"))
 			})
-			mux.HandleFunc("/v3/grill/docs", func(w http.ResponseWriter, r *http.Request) {
+			mux.HandleFunc("/index4ai/v1/docs", func(w http.ResponseWriter, r *http.Request) {
 				requests++
 				st, body := tt.pages(t, r.URL.Query().Get("cursor"), requests)
 				w.WriteHeader(st)

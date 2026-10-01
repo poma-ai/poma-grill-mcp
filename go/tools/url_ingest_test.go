@@ -19,18 +19,18 @@ func TestSerializeLabelsSorted(t *testing.T) {
 	}
 }
 
-// grill_ingest with a url must POST /grill/ingest carrying X-Remote-URL (and the
+// grill_ingest with a url must POST /ingest carrying X-Remote-URL (and the
 // serialized X-Labels), no file body, and return the parsed job_id.
 func TestGrillIngestURLSendsRemoteURLAndLabels(t *testing.T) {
 	var gotRemoteURL, gotLabels string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v3/grill/ingest":
+		case "/index4ai/v1/ingest":
 			gotRemoteURL = r.Header.Get("X-Remote-URL")
 			gotLabels = r.Header.Get("X-Labels")
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"job_id":"job-url-1"}`))
-		case "/v3/projects":
+		case "/index4ai/v1/projects":
 			// scope resolution — degrade gracefully with an empty list.
 			_, _ = w.Write([]byte(`[]`))
 		default:

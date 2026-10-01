@@ -19,7 +19,7 @@ import (
 	"github.com/poma-ai/poma-cli/pkg/client"
 )
 
-// grillIngestData sends POST /grill/ingest with raw file bytes.
+// grillIngestData sends POST /ingest with raw file bytes.
 // Placeholder for (*client.Client).GrillIngestData(data []byte, filename string) ([]byte, int, error).
 func grillIngestData(c *client.Client, data []byte, filename string, projectID string, meta ingestHeaders) ([]byte, int, error) {
 	name := grillSanitizeFilename(filename)
@@ -32,10 +32,10 @@ func grillIngestData(c *client.Client, data []byte, filename string, projectID s
 		headers["X-Project-ID"] = projectID
 	}
 	meta.apply(headers)
-	return c.Do(http.MethodPost, "/grill/ingest", bytes.NewReader(data), headers)
+	return c.Do(http.MethodPost, "/ingest", bytes.NewReader(data), headers)
 }
 
-// grillIngestURL sends POST /grill/ingest with an X-Remote-URL header and no
+// grillIngestURL sends POST /ingest with an X-Remote-URL header and no
 // body: the POMA Grill server fetches and ingests the remote URL. Returns the
 // same {job_id} shape as grillIngestData.
 func grillIngestURL(c *client.Client, remoteURL, projectID string, meta ingestHeaders) ([]byte, int, error) {
@@ -46,25 +46,25 @@ func grillIngestURL(c *client.Client, remoteURL, projectID string, meta ingestHe
 		headers["X-Project-ID"] = projectID
 	}
 	meta.apply(headers)
-	return c.Do(http.MethodPost, "/grill/ingest", nil, headers)
+	return c.Do(http.MethodPost, "/ingest", nil, headers)
 }
 
-// grillSearch sends POST /grill/search.
+// grillSearch sends POST /search.
 // Placeholder for (*client.Client).GrillSearch(req GrillSearchRequest) ([]byte, int, error).
 func grillSearch(c *client.Client, req grillSearchRequest, projectID string) ([]byte, int, error) {
 	if projectID == "" {
-		return c.DoJSON(http.MethodPost, "/grill/search", req)
+		return c.DoJSON(http.MethodPost, "/search", req)
 	}
-	return doJSONWithProjectID(c, http.MethodPost, "/grill/search", req, projectID)
+	return doJSONWithProjectID(c, http.MethodPost, "/search", req, projectID)
 }
 
-// grillSearchInDoc sends POST /grill/searchInDoc.
+// grillSearchInDoc sends POST /searchInDoc.
 // Placeholder for (*client.Client).GrillSearchInDoc(req GrillSearchInDocRequest) ([]byte, int, error).
 func grillSearchInDoc(c *client.Client, req grillSearchInDocRequest, projectID string) ([]byte, int, error) {
 	if projectID == "" {
-		return c.DoJSON(http.MethodPost, "/grill/searchInDoc", req)
+		return c.DoJSON(http.MethodPost, "/searchInDoc", req)
 	}
-	return doJSONWithProjectID(c, http.MethodPost, "/grill/searchInDoc", req, projectID)
+	return doJSONWithProjectID(c, http.MethodPost, "/searchInDoc", req, projectID)
 }
 
 // doJSONWithProjectID marshals body as JSON and calls c.Do with an X-Project-ID header.
@@ -87,7 +87,7 @@ func doJSONWithProjectID(c *client.Client, method, endpoint string, body any, pr
 // limit-unaware callers.
 const grillDocsPageLimit = 100
 
-// grillListDocs sends GET /grill/docs, optionally passing a pagination cursor
+// grillListDocs sends GET /docs, optionally passing a pagination cursor
 // (empty cursor = first page).
 // Placeholder for (*client.Client).GrillListDocs(cursor string) ([]byte, int, error).
 func grillListDocs(c *client.Client, projectID, cursor string) ([]byte, int, error) {
@@ -95,14 +95,14 @@ func grillListDocs(c *client.Client, projectID, cursor string) ([]byte, int, err
 	if projectID != "" {
 		headers = map[string]string{"X-Project-ID": projectID}
 	}
-	endpoint := "/grill/docs?limit=" + strconv.Itoa(grillDocsPageLimit)
+	endpoint := "/docs?limit=" + strconv.Itoa(grillDocsPageLimit)
 	if cursor != "" {
 		endpoint += "&cursor=" + url.QueryEscape(cursor)
 	}
 	return c.Do(http.MethodGet, endpoint, nil, headers)
 }
 
-// grillListAttributes sends GET /grill/attributes: the typed attribute names
+// grillListAttributes sends GET /attributes: the typed attribute names
 // the project has declared, with their types and the per-project name cap.
 // Same auth and X-Project-ID handling as grillListDocs.
 // Placeholder for (*client.Client).GrillListAttributes() ([]byte, int, error).
@@ -111,7 +111,7 @@ func grillListAttributes(c *client.Client, projectID string) ([]byte, int, error
 	if projectID != "" {
 		headers = map[string]string{"X-Project-ID": projectID}
 	}
-	return c.Do(http.MethodGet, "/grill/attributes", nil, headers)
+	return c.Do(http.MethodGet, "/attributes", nil, headers)
 }
 
 // grillListProjects sends GET /projects (optionally filtered by product).
@@ -143,7 +143,7 @@ func grillSanitizeFilename(name string) string {
 	return name
 }
 
-// grillSearchRequest is the JSON body for POST /grill/search.
+// grillSearchRequest is the JSON body for POST /search.
 type grillSearchRequest struct {
 	Query            string           `json:"query"`
 	ExcludeDocIDs    []string         `json:"exclude_doc_ids,omitempty"`
@@ -152,7 +152,7 @@ type grillSearchRequest struct {
 	ReturnPageImages bool             `json:"return_page_images,omitempty"`
 }
 
-// grillSearchInDocRequest is the JSON body for POST /grill/searchInDoc.
+// grillSearchInDocRequest is the JSON body for POST /searchInDoc.
 type grillSearchInDocRequest struct {
 	Query            string           `json:"query"`
 	DocFilter        string           `json:"doc_filter"`

@@ -187,7 +187,7 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 
 **Very large files without MCP**
 
-You can POST the raw file directly to the POMA API (same shape as the server: `POST` … `/grill/ingest` with octet-stream body and `Content-Disposition: attachment; filename="…"`), obtain `job_id`, then use `grill_search` with `doc_filter` set to that id. This bypasses MCP message limits entirely.
+You can POST the raw file directly to the POMA API (same shape as the server: `POST https://api.index4.ai/index4ai/v1/ingest` with octet-stream body and `Content-Disposition: attachment; filename="…"`), obtain `job_id`, then use `grill_search` with `doc_filter` set to that id. This bypasses MCP message limits entirely.
 
 ### `grill_search` arguments
 
@@ -285,7 +285,8 @@ When `POMA_API_JWT_SECRET` is set, the MCP verifies incoming Bearer JWTs locally
 |----------|----------|-------------|
 | `POMA_API_JWT_SECRET` | OAuth deployments | Signing key for JWT verification. Must match the api's secret. If set, `POMA_MCP_RESOURCE` must also be set. |
 | `POMA_MCP_RESOURCE` | OAuth deployments | The MCP's own public URI (e.g. `https://mcp.grill.poma-ai.com/`). Used for `aud` validation and advertised in the protected-resource metadata. |
-| `POMA_API_BASE_URL` | Recommended | The api's base URL (e.g. `https://api.poma-ai.com`). Advertised in protected-resource metadata as the authorization server. Defaults to `https://api.poma-ai.com`. |
+| `POMA_API_BASE_URL` | Recommended | The API host (e.g. `https://api.index4.ai`); only its origin is used, and requests go to `<origin>/index4ai/v1`. Defaults to `https://api.index4.ai`. |
+| `POMA_AUTH_SERVER_URL` | Optional | The OAuth authorization server advertised in protected-resource metadata. Defaults to the `POMA_API_BASE_URL` origin with `.index4.ai` mapped to `.poma-ai.com` (the api's issuer is `api(-dev).poma-ai.com` on both hosts), else `https://api.poma-ai.com`. |
 | `POMA_MCP_PUBLIC_URL` | Recommended | The MCP's own public base URL. Used for the `resource` field in protected-resource metadata and the `WWW-Authenticate` challenge. Falls back to `http://localhost:<port>`. **Required behind a reverse proxy** — `X-Forwarded-Proto`/`X-Forwarded-Host` headers are not trusted (to prevent header-injection attacks). |
 | `POMA_CONSOLE_URL` | Other brands | The web console that tool messages send users to for API keys, usage and project settings. Defaults to `https://console.poma-ai.com`; the index4ai MCP sets `https://console.index4.ai`. |
 | `GRILL_TRUSTED_ORIGINS` | Browser clients only | Comma-separated origins (`scheme://host[:port]`) allowed to make cross-origin state-changing requests. See below. |

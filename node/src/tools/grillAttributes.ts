@@ -38,7 +38,7 @@ function parseAttributes(raw: unknown): GrillAttribute[] {
 }
 
 // grillAttributes lists the typed attributes the project has declared.
-// Mirrors the Go GrillAttributes handler: GET /grill/attributes with the same
+// Mirrors the Go GrillAttributes handler: GET /attributes with the same
 // auth and X-Project-ID handling as grill_docs_list.
 export async function grillAttributes(
   args: Record<string, unknown>,
@@ -56,7 +56,7 @@ export async function grillAttributes(
   const client = new GrillClient(token, projectID);
   let res;
   try {
-    res = await client.doGet("/grill/attributes");
+    res = await client.doGet("/attributes");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return codedError(ErrorCode.TransportError, `grill attributes: ${msg}`, { extra: { attributes: [] } });
