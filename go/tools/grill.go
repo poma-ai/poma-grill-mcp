@@ -184,7 +184,7 @@ func grillIngestWithWait(ctx context.Context, req *mcp.CallToolRequest, input Gr
 
 	projectID := getProjectID(input.ProjectID)
 	// Legacy labels travel as attributes.labels; no X-Labels header (D157).
-	meta, aerr := encodeIngestMeta(labelItemsFromMap(input.Labels), input.Attributes, input.AttributeSchema)
+	meta, aerr := encodeIngestMeta(labelItemsFromMap(input.Labels), labelsSourceArg, input.Attributes, input.AttributeSchema)
 	if aerr != nil {
 		return errResult(), GrillIngestOutput{GrillError: errOut(CodeInvalidInput, "%s", aerr.Error())}, nil
 	}

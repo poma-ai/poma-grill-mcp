@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -168,6 +169,8 @@ func TestHandleIngestUploadRejectsBadAttributes(t *testing.T) {
 	for _, hdr := range []map[string]string{
 		{"X-Attributes": `not json`},
 		{"X-Attributes": `{"labels":"x"}`, "X-Labels": "a:1"},
+		{"X-Attributes": `{"labels":[null]}`, "X-Labels": "a:1"},
+		{"X-Attributes": `{"labels":["x",null]}`, "X-Labels": "a:1"},
 		{"X-Attribute-Schema": `{"orphan":{"type":"string"}}`},
 	} {
 		capt := startIngestStub(t)
@@ -187,6 +190,40 @@ func TestHandleIngestUploadRejectsBadAttributes(t *testing.T) {
 			t.Errorf("%v: %d upstream requests, want 0", hdr, n)
 		}
 	}
+}
+
+// Bad metadata headers are refused before the body is read, so a large upload
+// is never buffered just to be rejected; the X-Labels hint names the header.
+func TestHandleIngestUploadValidatesHeadersBeforeBody(t *testing.T) {
+	capt := startIngestStub(t)
+	body := &readSpy{}
+	req := httptest.NewRequest(http.MethodPost, "/ingest-upload", body)
+	req = req.WithContext(WithAPIToken(req.Context(), "tok"))
+	req.Header.Set("X-Labels", "team:eng")
+	req.Header.Set("X-Attribute-Schema", `{"labels":{"type":"string"}}`)
+	rec := httptest.NewRecorder()
+	HandleIngestUpload(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if body.reads != 0 {
+		t.Errorf("body read %d times before the header check refused the request", body.reads)
+	}
+	if n := len(capt.all()); n != 0 {
+		t.Errorf("%d upstream requests, want 0", n)
+	}
+	var got GrillError
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if !strings.HasSuffix(got.Error, "(includes 1 entries translated from the legacy X-Labels header)") {
+		t.Errorf("error = %q, want the X-Labels hint", got.Error)
+	}
+}
+
+type readSpy struct{ reads int }
+
+func (r *readSpy) Read(p []byte) (int, error) {
+	r.reads++
+	return 0, io.EOF
 }
 
 func TestMCPRequestBodyBytes(t *testing.T) {

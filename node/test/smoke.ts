@@ -710,6 +710,8 @@ async function errorCodeTests(
       ["team:eng", "must be an array of strings"],
       [[1, 2], "must be an array of strings"],
       [null, "null is not accepted"],
+      [[null], "null is not accepted"],
+      [["x", null], "null is not accepted"],
     ];
     for (const [labelsAttr, want] of cases) {
       ingest.attrHeaders.length = 0;
@@ -722,6 +724,40 @@ async function errorCodeTests(
       const ok = isError && content.code === "invalid_input" && (content.error ?? "").includes(want) && ingest.attrHeaders.length === 0;
       record(`labels + attributes.labels=${JSON.stringify(labelsAttr)} → invalid_input`, ok, ok ? undefined : JSON.stringify(content));
     }
+  }
+  // 9d. Attribute-rule errors with translated labels in play name the legacy
+  //     argument (element cap, size cap, schema type conflict).
+  {
+    const many: Record<string, string> = {};
+    for (let i = 0; i < 65; i++) many[`k${String(i).padStart(2, "0")}`] = "v";
+    const cases: [string, Record<string, unknown>, string, number][] = [
+      ["element cap", { labels: many }, "exceeds the cap of 64", 65],
+      ["size cap", { labels: { k: "v".repeat(2100) } }, "capped at 2048", 1],
+      ["schema type conflict", { labels: { team: "eng" }, attribute_schema: { labels: { type: "string" } } }, 'declared "string"', 1],
+      ["merge conflict", { labels: { team: "eng", a: "1" }, attributes: { labels: "x" } }, "must be an array of strings", 2],
+    ];
+    for (const [name, args, want, n] of cases) {
+      ingest.attrHeaders.length = 0;
+      const { isError, content } = await callTool(stubClient, "grill_ingest", { token: "scope1", url: "https://example.com/doc.pdf", ...args });
+      const err = content.error ?? "";
+      const ok =
+        isError && content.code === "invalid_input" && err.includes(want) &&
+        err.endsWith(`(includes ${n} entries translated from the legacy \`labels\` argument)`) && ingest.attrHeaders.length === 0;
+      record(`legacy labels hint: ${name}`, ok, ok ? undefined : JSON.stringify(content));
+    }
+  }
+  // 9e. Label keys sort by code point (Go's byte order), not UTF-16 units:
+  //     U+FF61 sorts before U+1F600, though its UTF-16 unit is higher.
+  {
+    ingest.attrHeaders.length = 0;
+    const { isError } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      labels: { "\u{1F600}": "1", "\uFF61": "2" },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && h?.attributes === '{"labels":["\\uff61:2","\\ud83d\\ude00:1"]}';
+    record("label keys sort by code point (matches Go)", ok, ok ? undefined : JSON.stringify(h));
   }
   // 10. url + file_path → invalid_input (mutual exclusivity).
   {

@@ -192,7 +192,7 @@ func uploadIngestMeta(r *http.Request) (ingestHeaders, error) {
 			return ingestHeaders{}, fmt.Errorf(`X-Attribute-Schema must be a JSON object like {"name": {"type": "encrypted_text"}}`)
 		}
 	}
-	return encodeIngestMeta(labelItemsFromHeader(r.Header.Get("X-Labels")), attrs, schema)
+	return encodeIngestMeta(labelItemsFromHeader(r.Header.Get("X-Labels")), labelsSourceHeader, attrs, schema)
 }
 
 // HandleIngestUpload serves POST /ingest-upload in HTTP mode: raw body (octet-stream)
@@ -209,6 +209,17 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 			Error: "missing API token (x-api-key, Authorization: Bearer, or POMA_API_KEY)",
 			Code:  CodeMissingToken,
 		})
+		return
+	}
+
+	// Caller metadata, validated before the body is read so bad headers are
+	// refused without buffering the upload: a legacy X-Labels header is
+	// translated into attributes.labels and merged with any X-Attributes /
+	// X-Attribute-Schema the caller sent; only X-Attributes goes upstream,
+	// never X-Labels (D157).
+	meta, merr := uploadIngestMeta(r)
+	if merr != nil {
+		writeIngestUploadError(w, http.StatusBadRequest, GrillError{Error: merr.Error(), Code: CodeInvalidInput})
 		return
 	}
 
@@ -294,14 +305,6 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 	// Falls back to POMA_PROJECT_ID env var when the header is absent,
 	// allowing server-wide default project scoping for the HTTP upload endpoint.
 	projectID := getProjectID(r.Header.Get("X-Project-ID"))
-	// Caller metadata: a legacy X-Labels header is translated into
-	// attributes.labels and merged with any X-Attributes / X-Attribute-Schema
-	// the caller sent; only X-Attributes goes upstream, never X-Labels (D157).
-	meta, merr := uploadIngestMeta(r)
-	if merr != nil {
-		writeIngestUploadError(w, http.StatusBadRequest, GrillError{Error: merr.Error(), Code: CodeInvalidInput})
-		return
-	}
 	body, st, err := grillIngestData(c, data, filename, projectID, meta)
 	if err != nil {
 		// Network/client error reaching the Grill API — transient, retryable.

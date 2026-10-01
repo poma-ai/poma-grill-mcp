@@ -15,6 +15,10 @@ func TestLabelItemsFromMapSorted(t *testing.T) {
 	if strings.Join(got, ",") != "a:1,b:2" || len(got) != 2 {
 		t.Fatalf("labelItemsFromMap = %q, want [a:1 b:2]", got)
 	}
+	// Byte (code point) order: U+FF61 before U+1F600; Node matches (smoke 9e).
+	if got := labelItemsFromMap(map[string]string{"\U0001F600": "1", "\uFF61": "2"}); strings.Join(got, ",") != "\uFF61:2,\U0001F600:1" {
+		t.Fatalf("labelItemsFromMap astral order = %q", got)
+	}
 	if len(labelItemsFromMap(nil)) != 0 {
 		t.Fatal("labelItemsFromMap(nil) must be empty")
 	}

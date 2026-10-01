@@ -255,28 +255,31 @@ const labelsAttributeName = "labels";
 
 /**
  * Renders the legacy `labels` tool argument as "key:value" items: only string
- * values kept, empty/whitespace-only keys skipped, keys sorted — the same order
- * and filtering the retired X-Labels serializer used. Mirrors Go labelItemsFromMap.
+ * values kept, empty/whitespace-only keys skipped, keys sorted by code point
+ * (UTF-8 byte order, as Go's sort.Strings — the default UTF-16 sort differs for
+ * astral-plane characters) — the same order and filtering the retired X-Labels
+ * serializer used. Mirrors Go labelItemsFromMap.
  */
 export function labelItemsFromArg(arg: unknown): string[] {
   if (!isPlainObject(arg)) return [];
   return Object.keys(arg)
     .filter((k) => k.trim() !== "" && typeof arg[k] === "string")
-    .sort()
+    .sort((x, y) => Buffer.compare(Buffer.from(x), Buffer.from(y)))
     .map((k) => `${k}:${arg[k] as string}`);
 }
 
 /**
- * Returns attrsArg with the legacy label items merged into attributes.labels:
- * explicit entries first, then the translated items, duplicates dropped.
- * attrsArg itself is not modified; with no items it is returned unchanged.
- * Throws when attributes.labels exists but is not an array of strings — the
- * items are never silently dropped. A non-object attrsArg is returned as is so
- * encodeIngestAttributes reports its usual error.
+ * Returns attrsArg with the legacy label items merged into attributes.labels
+ * (explicit entries first, then the translated items, duplicates dropped) and
+ * how many translated items were added. attrsArg itself is not modified; with
+ * no items it is returned unchanged. Throws when attributes.labels exists but
+ * is not an array of strings — the items are never silently dropped. A
+ * non-object attrsArg is returned as is so encodeIngestAttributes reports its
+ * usual error. Mirrors Go mergeLabelsAttribute.
  */
-export function mergeLabelsAttribute(attrsArg: unknown, items: string[]): unknown {
-  if (items.length === 0) return attrsArg;
-  if (attrsArg !== undefined && attrsArg !== null && !isPlainObject(attrsArg)) return attrsArg;
+export function mergeLabelsAttribute(attrsArg: unknown, items: string[]): { attrs: unknown; added: number } {
+  if (items.length === 0) return { attrs: attrsArg, added: 0 };
+  if (attrsArg !== undefined && attrsArg !== null && !isPlainObject(attrsArg)) return { attrs: attrsArg, added: 0 };
   const src: Record<string, unknown> = isPlainObject(attrsArg) ? attrsArg : {};
   const merged: string[] = [];
   if (Object.prototype.hasOwnProperty.call(src, labelsAttributeName)) {
@@ -288,31 +291,51 @@ export function mergeLabelsAttribute(attrsArg: unknown, items: string[]): unknow
     }
     for (const e of explicit as string[]) if (!merged.includes(e)) merged.push(e);
   }
-  for (const it of items) if (!merged.includes(it)) merged.push(it);
+  let added = 0;
+  for (const it of items) {
+    if (!merged.includes(it)) {
+      merged.push(it);
+      added++;
+    }
+  }
   // Null-prototype copy, as in compactASCIIJSON: a "__proto__" name must stay
   // an own property so validation still sees (and refuses) it.
   const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const k of Object.keys(src)) out[k] = src[k];
   out[labelsAttributeName] = merged;
-  return out;
+  return { attrs: out, added };
+}
+
+// Names the legacy source in an error, so a caller who only passed labels can
+// tell why an attribute rule fired. Mirrors Go legacyLabelsHint.
+function withLegacyLabelsHint(err: unknown, n: number): Error {
+  const e = err instanceof Error ? err : new Error(String(err));
+  if (n === 0) return e;
+  return new Error(`${e.message} (includes ${n} entries translated from the legacy \`labels\` argument)`);
 }
 
 /**
  * Builds the ingest metadata headers from the legacy `labels` argument plus
  * `attributes` / `attribute_schema`: the labels are merged into
  * attributes.labels and the result goes through encodeIngestAttributes, so the
- * merged labels obey every attribute rule (64 elements, 2048-character header).
- * When the merge is impossible, the attributes are first validated as given so
- * an input that was already invalid reports its usual error. Mirrors Go
+ * merged labels obey every attribute rule (64 elements, 64 names,
+ * 2048-character header). When the merge is impossible, the attributes are
+ * first validated as given so an input that was already invalid reports its
+ * usual error. Errors raised with translated labels in play say so. Mirrors Go
  * encodeIngestMeta.
  */
 export function encodeIngestMeta(labelsArg: unknown, attrsArg: unknown, schemaArg: unknown): IngestHeaders {
-  let merged: unknown;
+  const items = labelItemsFromArg(labelsArg);
+  let merged: { attrs: unknown; added: number };
   try {
-    merged = mergeLabelsAttribute(attrsArg, labelItemsFromArg(labelsArg));
+    merged = mergeLabelsAttribute(attrsArg, items);
   } catch (mergeErr) {
     encodeIngestAttributes(attrsArg, schemaArg);
-    throw mergeErr;
+    throw withLegacyLabelsHint(mergeErr, items.length);
   }
-  return encodeIngestAttributes(merged, schemaArg);
+  try {
+    return encodeIngestAttributes(merged.attrs, schemaArg);
+  } catch (err) {
+    throw withLegacyLabelsHint(err, merged.added);
+  }
 }
