@@ -98,3 +98,19 @@ func TestCrossOriginProtectionEmptyEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestLoggingMiddlewareFlushes guards the SSE path: the SDK flushes through
+// http.ResponseController, which needs the wrapper to Unwrap. If it cannot, the
+// subscriptions/listen ack stays buffered and clients stall on connect.
+func TestLoggingMiddlewareFlushes(t *testing.T) {
+	rec := httptest.NewRecorder()
+	loggingMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("event: message\n\n")) //nolint:errcheck
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Fatalf("Flush through loggingMiddleware: %v", err)
+		}
+	})).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+	if !rec.Flushed {
+		t.Fatal("response was not flushed")
+	}
+}
