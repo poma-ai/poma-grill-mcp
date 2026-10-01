@@ -23,6 +23,26 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const NODE_ROOT = resolve(HERE, "..");
 const BINARY = resolve(NODE_ROOT, "dist", "index.js");
 
+// No smoke test may reach a live POMA API. Every child server starts from an
+// environment with ALL POMA_* variables removed (POMA_API_KEY, POMA_API_BASE_URL,
+// POMA_STATUS_API_BASE_URL, POMA_PROJECT_ID, POMA_CONSOLE_URL — everything the
+// server reads for a token, a host or a scope), and its API host defaults to a
+// dead stub started in main(). A test that wants an API passes its own
+// POMA_API_BASE_URL; one that forgets lands on the dead stub, and the run fails
+// listing the stray requests, instead of reaching https://api.index4.ai with
+// whatever key the developer has exported.
+let deadAPIURL = "";
+const deadAPIHits: string[] = [];
+
+function childEnv(overrides: Record<string, string>): Record<string, string> {
+  const base: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !k.startsWith("POMA_")) base[k] = v;
+  }
+  if (deadAPIURL === "") throw new Error("dead API stub not started");
+  return { ...base, POMA_API_BASE_URL: deadAPIURL, ...overrides };
+}
+
 const EXPECTED_TOOLS = [
   "grill_attributes",
   "grill_docs_list",
@@ -52,7 +72,7 @@ class MCPClient {
 
   constructor(env: Record<string, string>) {
     this.proc = spawn(process.execPath, [BINARY, "-input", "-"], {
-      env: { ...process.env, ...env },
+      env: childEnv(env),
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.proc.stderr.setEncoding("utf8");
@@ -1099,9 +1119,9 @@ async function httpModeTests(): Promise<void> {
       s.close(() => res(port));
     });
   });
-  const { POMA_API_KEY: _acc, GRILL_INGEST_ALLOWED_PREFIX: _pre, ...base } = process.env;
+  const { GRILL_INGEST_ALLOWED_PREFIX: _pre, ...base } = childEnv({ POMA_API_KEY: "smoke-fake-key" });
   const proc = spawn(process.execPath, [BINARY, "-http", `127.0.0.1:${port}`], {
-    env: { ...base, POMA_API_KEY: "smoke-fake-key" },
+    env: base,
     stdio: ["ignore", "ignore", "pipe"],
   });
   await new Promise<void>((res, rej) => {
@@ -1148,6 +1168,16 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  const deadAPI = createServer((req, res) => {
+    deadAPIHits.push(`${req.method} ${req.url}`);
+    res.statusCode = 418;
+    res.setHeader("content-type", "application/json");
+    res.end('{"error":"smoke test reached the default API host; pass POMA_API_BASE_URL to a stub"}');
+  });
+  deadAPIURL = await new Promise<string>((res) => {
+    deadAPI.listen(0, "127.0.0.1", () => res(`http://127.0.0.1:${(deadAPI.address() as AddressInfo).port}`));
+  });
+
   // Validation handlers all check token presence first; supply a placeholder
   // so the validation messages we're asserting on actually surface.
   const client = new MCPClient({ POMA_API_KEY: "smoke-fake-key" });
@@ -1190,6 +1220,13 @@ async function main(): Promise<void> {
   }
 
   await httpModeTests();
+
+  await new Promise<void>((res) => deadAPI.close(() => res()));
+  record(
+    "no request reached the default API host",
+    deadAPIHits.length === 0,
+    deadAPIHits.length === 0 ? undefined : deadAPIHits.join(", "),
+  );
 
   const passed = results.filter((r) => r.ok).length;
   const failed = results.length - passed;

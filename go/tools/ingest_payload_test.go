@@ -14,6 +14,9 @@ import (
 // Missing token still yields the same prose message and HTTP status as before,
 // plus the additive `code` field for HTTP-mode parity with the MCP tools.
 func TestHandleIngestUploadMissingToken(t *testing.T) {
+	// Without this the handler falls back to an exported POMA_API_KEY and
+	// uploads to the live default API host.
+	noLiveAPI(t)
 	req := httptest.NewRequest(http.MethodPost, "/ingest-upload", bytes.NewReader([]byte("hello world")))
 	rec := httptest.NewRecorder()
 
