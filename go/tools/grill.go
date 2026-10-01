@@ -845,7 +845,7 @@ type GrillDocsListOutput struct {
 // with a truncation note.
 const grillDocsMaxPages = 10
 
-// grillDocsPage is one wire page of GET /grill/docs. On the currently deployed
+// grillDocsPage is one wire page of GET /docs. On the currently deployed
 // API has_more/next_cursor/degraded are absent and unmarshal to their zero
 // values, which collapses the auto-paging loop to exactly one request —
 // today's single-request behavior.
@@ -1367,8 +1367,8 @@ var grillProjectsInputSchema = &jsonschema.Schema{
 		},
 		"product": {
 			Type:        "string",
-			Description: "Filter by product type. If omitted, returns all projects.",
-			Enum:        []any{"grill", "primecut"},
+			Description: "Filter by product type. The index4ai API lists grill projects only, so omitting it returns all grill projects.",
+			Enum:        []any{"grill"},
 		},
 	},
 }

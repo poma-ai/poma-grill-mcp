@@ -70,9 +70,9 @@ func TestGrillJobsStatusSurfacesGrillOutcome(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.Contains(r.URL.Path, "/jobs/job-dedup/"):
+		case strings.HasPrefix(r.URL.Path, "/index4ai/v1/jobs/job-dedup/"):
 			_, _ = w.Write([]byte(`{"is_terminal":true,"status":"done","grill":{"deduplicated":true,"doc_id":"doc-orig","replaced_doc_ids":[]}}`))
-		case strings.Contains(r.URL.Path, "/jobs/job-replaced/"):
+		case strings.HasPrefix(r.URL.Path, "/index4ai/v1/jobs/job-replaced/"):
 			_, _ = w.Write([]byte(`{"is_terminal":true,"status":"done","grill":{"deduplicated":false,"doc_id":"job-replaced","replaced_doc_ids":["doc-old"]}}`))
 		default:
 			_, _ = w.Write([]byte(`{"is_terminal":true,"status":"done"}`))

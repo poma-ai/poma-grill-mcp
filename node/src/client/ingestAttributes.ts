@@ -1,6 +1,6 @@
 // Typed document attributes on ingest. Mirrors go/tools/ingest_attributes.go.
 //
-// The gateway takes them on POST /grill/ingest as two headers — grill ingest is
+// The gateway takes them on POST /ingest as two headers — grill ingest is
 // octet-stream only, so a header is the ONLY carrier — and refuses a header
 // over 2048 characters, a name outside ^[a-z0-9_]{1,64}$, or more than 64
 // names. The same rules are checked here so the agent gets a precise

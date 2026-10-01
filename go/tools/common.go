@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -15,25 +16,35 @@ import (
 )
 
 const (
-	defaultAPIBaseURL    = "https://api.poma-ai.com"
+	defaultAPIBaseURL    = "https://api.index4.ai"
 	defaultConsoleURL    = "https://console.poma-ai.com"
-	defaultVersionPrefix = "/v3"
+	defaultVersionPrefix = "/index4ai/v1"
 	defaultStatusPrefix  = "/status/v1"
 )
 
 // apiBaseURLVersionSuffixRE matches a trailing API version path segment: /v then digits (e.g. /v2, /v10).
 var apiBaseURLVersionSuffixRE = regexp.MustCompile(`/v[0-9]+$`)
 
-func apiBaseURL() string {
-	// If POMA_API_BASE_URL is set, use it.
-	if v := os.Getenv("POMA_API_BASE_URL"); v != "" {
-		if apiBaseURLVersionSuffixRE.MatchString(v) {
-			// If it already has a version suffix, use it.
-			return strings.TrimRight(v, "/")
-		}
-		return strings.TrimRight(v, "/") + defaultVersionPrefix
+// apiOrigin is the scheme://host of the API: POMA_API_BASE_URL with any path dropped,
+// so "https://api.index4.ai" and "https://api.index4.ai/index4ai/v1" both work.
+func apiOrigin() string {
+	v := strings.TrimRight(strings.TrimSpace(os.Getenv("POMA_API_BASE_URL")), "/")
+	if v == "" {
+		return defaultAPIBaseURL
 	}
-	return defaultAPIBaseURL + defaultVersionPrefix
+	if u, err := url.Parse(v); err == nil && u.Scheme != "" && u.Host != "" {
+		return u.Scheme + "://" + u.Host
+	}
+	return v
+}
+
+// apiBaseURL is the versioned API root, always <origin>/index4ai/v1. /index4ai/v1 serves
+// the grill handlers at the root (/index4ai/v1/ingest is /v3/grill/ingest; poma-services-go
+// docs/api/index4ai/v1/openapi.yaml). Any path on POMA_API_BASE_URL is replaced rather
+// than kept: a grill-era value such as https://api.poma-ai.com/v3 would otherwise send
+// every call to /v3/ingest, which does not exist.
+func apiBaseURL() string {
+	return apiOrigin() + defaultVersionPrefix
 }
 
 // consoleURL is the web console that user-facing messages send people to (API keys,
@@ -46,21 +57,16 @@ func consoleURL() string {
 	return defaultConsoleURL
 }
 
+// statusAPIBaseURL is the job-status SSE service. It is not under /index4ai/v1: the
+// gateway serves it at /status/v1 on the API host, so it hangs off apiOrigin.
 func statusAPIBaseURL() string {
-	// If POMA_STATUS_API_BASE_URL is set, use it.
-	if v := os.Getenv("POMA_STATUS_API_BASE_URL"); v != "" {
+	if v := strings.TrimRight(strings.TrimSpace(os.Getenv("POMA_STATUS_API_BASE_URL")), "/"); v != "" {
 		if apiBaseURLVersionSuffixRE.MatchString(v) {
-			// If it already has a version suffix, use it.
-			return strings.TrimRight(v, "/")
+			return v
 		}
-		return strings.TrimRight(v, "/") + defaultStatusPrefix
+		return v + defaultStatusPrefix
 	}
-	// If POMA_API_BASE_URL is set, use it and append /status/v1.
-	if v := os.Getenv("POMA_API_BASE_URL"); v != "" {
-		return strings.TrimRight(v, "/") + defaultStatusPrefix
-	}
-	// Use default
-	return defaultAPIBaseURL + defaultStatusPrefix
+	return apiOrigin() + defaultStatusPrefix
 }
 
 // errResult returns a CallToolResult with IsError set. When the caller also

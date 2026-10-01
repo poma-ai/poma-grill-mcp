@@ -45,14 +45,14 @@ The server has two modes, selected at startup:
 
 **Flow for `grill_ingest`** (`go/tools/grill.go`):
 1. Accepts base64-encoded file + filename
-2. POSTs to POMA Grill API (`https://api.poma-ai.com/v3/grill/`)
-3. Reads SSE status stream (`https://api.poma-ai.com/status/v1`) until terminal state
+2. POSTs to `/ingest` on the index4ai API (`https://api.index4.ai/index4ai/v1`; index4ai serves the grill handlers at the root, without `/grill`)
+3. Reads SSE status stream (`https://api.index4.ai/status/v1`) until terminal state
 4. Sends each status event as an MCP progress notification
 5. Returns `job_id` and status events; `job_id` doubles as `doc_id` for search (unless the status carries a `grill` object — then `grill.doc_id` is the searchable document, see README "Dedup and re-ingest")
 
 **Flow for `grill_search`** (`go/tools/grill.go`):
 1. Accepts a natural-language query and optional `doc_filter` (= `job_id` from ingest)
-2. Routes to `/grill/searchInDoc` when `doc_filter` is set, `/grill/search` otherwise
+2. Routes to `/searchInDoc` when `doc_filter` is set, `/search` otherwise
 3. Returns concatenated context text for RAG prompting
 
 **Tool registration** is in `go/tools/tools.go`. `grill_docs_delete` is not yet wired up pending upstream `poma-cli` client support.

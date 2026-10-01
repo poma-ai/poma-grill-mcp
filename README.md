@@ -211,7 +211,7 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 
 **Very large files without MCP**
 
-You can POST the raw file directly to the POMA API (same shape as the server: `POST` … `/grill/ingest` with octet-stream body and `Content-Disposition: attachment; filename="…"`), obtain `job_id`, then use `grill_search` with `doc_filter` set to that id. This bypasses MCP message limits entirely.
+You can POST the raw file directly to the POMA API (same shape as the server: `POST https://api.index4.ai/index4ai/v1/ingest` with octet-stream body and `Content-Disposition: attachment; filename="…"`), obtain `job_id`, then use `grill_search` with `doc_filter` set to that id. This bypasses MCP message limits entirely.
 
 ### `grill_search` arguments
 

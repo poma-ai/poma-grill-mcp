@@ -113,7 +113,7 @@ func TestGrillProjectsWithProjectKeyUsesProjectInfo(t *testing.T) {
 	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
-		if strings.HasSuffix(r.URL.Path, "/projects/info") {
+		if r.URL.Path == "/index4ai/v1/projects/info" {
 			_, _ = w.Write([]byte(`{"id":"242d","project_id":"242d","account_id":"bdaa","name":"immoscout","product":"grill","protected":false,"is_default":false}`))
 			return
 		}
@@ -130,7 +130,7 @@ func TestGrillProjectsWithProjectKeyUsesProjectInfo(t *testing.T) {
 	if out.Code != "" || !strings.Contains(out.Projects, "immoscout") || !strings.Contains(out.Projects, "project API key") {
 		t.Fatalf("out = %+v", out)
 	}
-	if len(paths) != 1 || !strings.HasSuffix(paths[0], "/projects/info") {
+	if len(paths) != 1 || paths[0] != "/index4ai/v1/projects/info" {
 		t.Fatalf("paths = %v, want only /projects/info", paths)
 	}
 

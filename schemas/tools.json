@@ -986,10 +986,9 @@
       "inputSchema": {
         "properties": {
           "product": {
-            "description": "Filter by product type. If omitted, returns all projects.",
+            "description": "Filter by product type. The index4ai API lists grill projects only, so omitting it returns all grill projects.",
             "enum": [
-              "grill",
-              "primecut"
+              "grill"
             ],
             "type": "string"
           },

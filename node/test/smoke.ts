@@ -213,7 +213,7 @@ async function offlineTests(client: MCPClient): Promise<void> {
 //
 // The stub selects a scenario from the Bearer token, so a single server + a
 // single spawned MCP process cover every pagination shape. Cursor plumbing:
-// the tool must send GET /v3/grill/docs?cursor=<next_cursor> for follow-ups.
+// the tool must send GET /index4ai/v1/docs?cursor=<next_cursor> for follow-ups.
 
 function docsPageBody(
   docIDs: string[],
@@ -238,7 +238,7 @@ function startStubAPI(): Promise<{ url: string; docsRequests: Map<string, number
   const server: Server = createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://localhost");
     res.setHeader("content-type", "application/json");
-    if (u.pathname !== "/v3/grill/docs") {
+    if (u.pathname !== "/index4ai/v1/docs") {
       res.statusCode = 404;
       res.end("{}");
       return;
@@ -411,9 +411,9 @@ async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, 
 interface IngestCapture {
   remoteURL?: string;
   labels?: string;
-  // X-Attributes / X-Attribute-Schema of every /v3/grill/ingest request, in order.
+  // X-Attributes / X-Attribute-Schema of every /index4ai/v1/ingest request, in order.
   attrHeaders: { attributes?: string; schema?: string }[];
-  // Last /v3/grill/attributes request: method, Authorization, X-Project-ID.
+  // Last /index4ai/v1/attributes request: method, Authorization, X-Project-ID.
   attributes?: { method?: string; auth?: string; projectID?: string };
 }
 
@@ -428,7 +428,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
     orga_id: "",
     is_default: true,
   };
-  // Records the headers the last /v3/grill/ingest request carried, for assertions.
+  // Records the headers the last /index4ai/v1/ingest request carried, for assertions.
   const ingest: IngestCapture = { attrHeaders: [] };
   const server: Server = createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://localhost");
@@ -437,7 +437,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
 
     // Projects listing — used by scope resolution and grill_projects. The
     // gateway refuses project keys here (403) and answers /projects/info instead.
-    if (u.pathname === "/v3/projects") {
+    if (u.pathname === "/index4ai/v1/projects") {
       if (scenario.startsWith("poma_proj_")) {
         res.statusCode = 403;
         res.end('{"code":403,"reason":"forbidden","error":"project API keys are not accepted on this endpoint"}');
@@ -446,7 +446,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       res.end(JSON.stringify([defaultProject]));
       return;
     }
-    if (u.pathname === "/v3/projects/info") {
+    if (u.pathname === "/index4ai/v1/projects/info") {
       if (!scenario.startsWith("poma_proj_")) {
         res.statusCode = 401;
         res.end('{"error":"A project API key is required"}');
@@ -456,7 +456,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       return;
     }
     // Ingest — capture X-Remote-URL / X-Labels and return a job_id.
-    if (u.pathname === "/v3/grill/ingest") {
+    if (u.pathname === "/index4ai/v1/ingest") {
       ingest.remoteURL = (req.headers["x-remote-url"] as string | undefined) ?? undefined;
       ingest.labels = (req.headers["x-labels"] as string | undefined) ?? undefined;
       ingest.attrHeaders.push({
@@ -473,7 +473,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       return;
     }
     // Job status snapshot — scenario selected by token.
-    if (/^\/v3\/jobs\/.+\/status$/.test(u.pathname)) {
+    if (/^\/index4ai\/v1\/jobs\/.+\/status$/.test(u.pathname)) {
       if (scenario === "js404") {
         res.statusCode = 404;
         res.end('{"error":"job not found"}');
@@ -516,7 +516,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       return;
     }
     // Attributes — capture method/auth/project header; "attrs503" = unreadable schema.
-    if (u.pathname === "/v3/grill/attributes") {
+    if (u.pathname === "/index4ai/v1/attributes") {
       ingest.attributes = {
         method: req.method,
         auth: req.headers.authorization,
@@ -540,7 +540,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       return;
     }
     // Search.
-    if (u.pathname === "/v3/grill/search" || u.pathname === "/v3/grill/searchInDoc") {
+    if (u.pathname === "/index4ai/v1/search" || u.pathname === "/index4ai/v1/searchInDoc") {
       res.end('{"context":"some context","assets":null}');
       return;
     }
@@ -708,7 +708,7 @@ async function errorCodeTests(
     const ok = isError && content.code === "missing_token" && Array.isArray(content.documents) && content.documents.length === 0;
     record("docs_list error output has documents: []", ok, ok ? undefined : JSON.stringify(content));
   }
-  // 13b. grill_attributes: GET /grill/attributes with Bearer + X-Project-ID,
+  // 13b. grill_attributes: GET /attributes with Bearer + X-Project-ID,
   //      renders names/types, max_names, note and scope.
   {
     ingest.attributes = undefined;

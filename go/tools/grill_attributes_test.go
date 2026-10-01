@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// attributesStub serves GET /v3/grill/attributes with the given status/body and
+// attributesStub serves GET /index4ai/v1/attributes with the given status/body and
 // records the request it saw.
 type attributesSeen struct {
 	method, path, auth, project string
@@ -20,10 +20,10 @@ func startAttributesStub(t *testing.T, status int, body string) (*attributesSeen
 	t.Helper()
 	seen := &attributesSeen{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v3/projects", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/index4ai/v1/projects", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`[{"id":"p1","project_id":"p1","name":"Contracts","product":"grill"}]`))
 	})
-	mux.HandleFunc("/v3/grill/attributes", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/index4ai/v1/attributes", func(w http.ResponseWriter, r *http.Request) {
 		seen.requests++
 		seen.method = r.Method
 		seen.path = r.URL.Path
@@ -53,8 +53,8 @@ func TestGrillAttributesRequestAndRendering(t *testing.T) {
 	if res != nil && res.IsError {
 		t.Fatalf("unexpected tool error: %+v", out.GrillError)
 	}
-	if seen.requests != 1 || seen.method != http.MethodGet || seen.path != "/v3/grill/attributes" {
-		t.Errorf("request = %d x %s %s, want 1 x GET /v3/grill/attributes", seen.requests, seen.method, seen.path)
+	if seen.requests != 1 || seen.method != http.MethodGet || seen.path != "/index4ai/v1/attributes" {
+		t.Errorf("request = %d x %s %s, want 1 x GET /index4ai/v1/attributes", seen.requests, seen.method, seen.path)
 	}
 	if seen.auth != "Bearer tok-attrs-1" {
 		t.Errorf("Authorization = %q, want Bearer token", seen.auth)

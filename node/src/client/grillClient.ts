@@ -54,7 +54,7 @@ export class GrillClient {
   }
 
   async ingestRaw(data: Uint8Array, filename: string, meta: IngestHeaders = {}): Promise<GrillResponse> {
-    const url = joinURL(apiBaseURL(), "/grill/ingest");
+    const url = joinURL(apiBaseURL(), "/ingest");
     const safeName = sanitizeFilename(filename);
     // BodyInit accepts BufferSource; Uint8Array is allowed in Node 20+ fetch.
     const headers: Record<string, string> = {
@@ -70,11 +70,11 @@ export class GrillClient {
     return { body: buf, status: res.status };
   }
 
-  // ingestRemoteURL sends POST /grill/ingest with an X-Remote-URL header and no
+  // ingestRemoteURL sends POST /ingest with an X-Remote-URL header and no
   // body: the POMA Grill server fetches and ingests the remote URL. Returns the
   // same { job_id } shape as ingestRaw.
   async ingestRemoteURL(remoteURL: string, meta: IngestHeaders = {}): Promise<GrillResponse> {
-    const url = joinURL(apiBaseURL(), "/grill/ingest");
+    const url = joinURL(apiBaseURL(), "/ingest");
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       "X-Remote-URL": remoteURL,

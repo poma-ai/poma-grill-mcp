@@ -34,7 +34,7 @@ the two differ and the `job_id` matches no indexed document.
 ## Privacy & data
 
 This connector sends the documents and queries you provide to the POMA Grill API
-(`https://api.poma-ai.com`) for processing. See the privacy and security policy:
+(`https://api.index4.ai`) for processing. See the privacy and security policy:
 <https://www.poma-ai.com/security>.
 
 ## Links
