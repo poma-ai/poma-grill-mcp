@@ -14,8 +14,8 @@ import {
   type ToolContext,
 } from "../common.js";
 import { GrillClient, parseJob } from "../client/grillClient.js";
-import { parseLabelsArg, resolveIngestPayload, serializeLabels } from "../client/ingestPayload.js";
-import { encodeIngestAttributes, type IngestHeaders } from "../client/ingestAttributes.js";
+import { resolveIngestPayload } from "../client/ingestPayload.js";
+import { encodeIngestMeta, type IngestHeaders } from "../client/ingestAttributes.js";
 import { resolveScope, scopeFields } from "../scope.js";
 
 export async function grillIngest(
@@ -30,7 +30,8 @@ export async function grillIngest(
   const url = typeof args.url === "string" ? args.url.trim() : "";
   let meta: IngestHeaders;
   try {
-    meta = { labels: serializeLabels(parseLabelsArg(args.labels)), ...encodeIngestAttributes(args.attributes, args.attribute_schema) };
+    // Legacy labels travel as attributes.labels; no X-Labels header (D157).
+    meta = encodeIngestMeta(args.labels, args.attributes, args.attribute_schema);
   } catch (err) {
     return codedError(ErrorCode.InvalidInput, err instanceof Error ? err.message : String(err));
   }

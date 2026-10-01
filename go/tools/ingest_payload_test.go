@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,9 @@ import (
 // Missing token still yields the same prose message and HTTP status as before,
 // plus the additive `code` field for HTTP-mode parity with the MCP tools.
 func TestHandleIngestUploadMissingToken(t *testing.T) {
+	// Without this the handler falls back to an exported POMA_API_KEY and
+	// uploads to the live default API host.
+	noLiveAPI(t)
 	req := httptest.NewRequest(http.MethodPost, "/ingest-upload", bytes.NewReader([]byte("hello world")))
 	rec := httptest.NewRecorder()
 
@@ -123,6 +127,103 @@ func TestHandleIngestUploadUpstream5xxIsRetryable(t *testing.T) {
 	if !got.Retryable {
 		t.Fatal("5xx upstream_error must be retryable")
 	}
+}
+
+// /ingest-upload translates a caller's X-Labels into attributes.labels, merged
+// after the caller's own X-Attributes labels, and forwards X-Attribute-Schema;
+// X-Labels itself is never sent upstream.
+func TestHandleIngestUploadTranslatesLabelsHeader(t *testing.T) {
+	capt := startIngestStub(t)
+	req := httptest.NewRequest(http.MethodPost, "/ingest-upload", bytes.NewReader([]byte("hello world")))
+	req = req.WithContext(WithAPIToken(req.Context(), "tok"))
+	req.Header.Set("X-Filename", "a.txt")
+	req.Header.Set("X-Labels", " team:eng , ,a:1,z:9")
+	req.Header.Set("X-Attributes", `{"labels":["z:9"],"notes":"private"}`)
+	req.Header.Set("X-Attribute-Schema", `{"notes":{"type":"encrypted_text"}}`)
+	rec := httptest.NewRecorder()
+
+	HandleIngestUpload(rec, req)
+
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	reqs := capt.all()
+	if len(reqs) != 1 {
+		t.Fatalf("ingest requests = %d, want 1", len(reqs))
+	}
+	h := reqs[0]
+	if got, want := h.Get("X-Attributes"), `{"labels":["z:9","team:eng","a:1"],"notes":"private"}`; got != want {
+		t.Errorf("X-Attributes = %s\nwant           %s", got, want)
+	}
+	if got := h.Get("X-Attribute-Schema"); got != `{"notes":{"type":"encrypted_text"}}` {
+		t.Errorf("X-Attribute-Schema = %q", got)
+	}
+	if _, ok := h["X-Labels"]; ok {
+		t.Error("X-Labels must not be forwarded")
+	}
+}
+
+// Bad caller metadata on /ingest-upload is a 400 invalid_input before any
+// upstream call.
+func TestHandleIngestUploadRejectsBadAttributes(t *testing.T) {
+	for _, hdr := range []map[string]string{
+		{"X-Attributes": `not json`},
+		{"X-Attributes": `{"labels":"x"}`, "X-Labels": "a:1"},
+		{"X-Attributes": `{"labels":[null]}`, "X-Labels": "a:1"},
+		{"X-Attributes": `{"labels":["x",null]}`, "X-Labels": "a:1"},
+		{"X-Attribute-Schema": `{"orphan":{"type":"string"}}`},
+	} {
+		capt := startIngestStub(t)
+		req := httptest.NewRequest(http.MethodPost, "/ingest-upload", bytes.NewReader([]byte("hello world")))
+		req = req.WithContext(WithAPIToken(req.Context(), "tok"))
+		for k, v := range hdr {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		HandleIngestUpload(rec, req)
+		var got GrillError
+		_ = json.Unmarshal(rec.Body.Bytes(), &got)
+		if rec.Code != http.StatusBadRequest || got.Code != CodeInvalidInput {
+			t.Errorf("%v: status=%d code=%s, want 400 invalid_input", hdr, rec.Code, got.Code)
+		}
+		if n := len(capt.all()); n != 0 {
+			t.Errorf("%v: %d upstream requests, want 0", hdr, n)
+		}
+	}
+}
+
+// Bad metadata headers are refused before the body is read, so a large upload
+// is never buffered just to be rejected; the X-Labels hint names the header.
+func TestHandleIngestUploadValidatesHeadersBeforeBody(t *testing.T) {
+	capt := startIngestStub(t)
+	body := &readSpy{}
+	req := httptest.NewRequest(http.MethodPost, "/ingest-upload", body)
+	req = req.WithContext(WithAPIToken(req.Context(), "tok"))
+	req.Header.Set("X-Labels", "team:eng")
+	req.Header.Set("X-Attribute-Schema", `{"labels":{"type":"string"}}`)
+	rec := httptest.NewRecorder()
+	HandleIngestUpload(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if body.reads != 0 {
+		t.Errorf("body read %d times before the header check refused the request", body.reads)
+	}
+	if n := len(capt.all()); n != 0 {
+		t.Errorf("%d upstream requests, want 0", n)
+	}
+	var got GrillError
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if !strings.HasSuffix(got.Error, "(includes 1 entries translated from the legacy X-Labels header)") {
+		t.Errorf("error = %q, want the X-Labels hint", got.Error)
+	}
+}
+
+type readSpy struct{ reads int }
+
+func (r *readSpy) Read(p []byte) (int, error) {
+	r.reads++
+	return 0, io.EOF
 }
 
 func TestMCPRequestBodyBytes(t *testing.T) {

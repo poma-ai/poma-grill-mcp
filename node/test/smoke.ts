@@ -23,6 +23,26 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const NODE_ROOT = resolve(HERE, "..");
 const BINARY = resolve(NODE_ROOT, "dist", "index.js");
 
+// No smoke test may reach a live POMA API. Every child server starts from an
+// environment with ALL POMA_* variables removed (POMA_API_KEY, POMA_API_BASE_URL,
+// POMA_STATUS_API_BASE_URL, POMA_PROJECT_ID, POMA_CONSOLE_URL — everything the
+// server reads for a token, a host or a scope), and its API host defaults to a
+// dead stub started in main(). A test that wants an API passes its own
+// POMA_API_BASE_URL; one that forgets lands on the dead stub, and the run fails
+// listing the stray requests, instead of reaching https://api.index4.ai with
+// whatever key the developer has exported.
+let deadAPIURL = "";
+const deadAPIHits: string[] = [];
+
+function childEnv(overrides: Record<string, string>): Record<string, string> {
+  const base: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !k.startsWith("POMA_")) base[k] = v;
+  }
+  if (deadAPIURL === "") throw new Error("dead API stub not started");
+  return { ...base, POMA_API_BASE_URL: deadAPIURL, ...overrides };
+}
+
 const EXPECTED_TOOLS = [
   "grill_attributes",
   "grill_docs_list",
@@ -52,7 +72,7 @@ class MCPClient {
 
   constructor(env: Record<string, string>) {
     this.proc = spawn(process.execPath, [BINARY, "-input", "-"], {
-      env: { ...process.env, ...env },
+      env: childEnv(env),
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.proc.stderr.setEncoding("utf8");
@@ -455,7 +475,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       res.end(JSON.stringify({ ...defaultProject, id: "242d", project_id: "242d", name: "immoscout", is_default: false }));
       return;
     }
-    // Ingest — capture X-Remote-URL / X-Labels and return a job_id.
+    // Ingest — capture X-Remote-URL / X-Labels (must stay absent) and return a job_id.
     if (u.pathname === "/index4ai/v1/ingest") {
       ingest.remoteURL = (req.headers["x-remote-url"] as string | undefined) ?? undefined;
       ingest.labels = (req.headers["x-labels"] as string | undefined) ?? undefined;
@@ -654,16 +674,90 @@ async function errorCodeTests(
       content.scope?.project_name === "Default Workspace";
     record("url ingest sends X-Remote-URL + returns job_id", ok, ok ? undefined : `job_id=${content.job_id} remoteURL=${ingest.remoteURL}`);
   }
-  // 9. Labels serialize to a sorted X-Labels header.
+  // 9. Legacy labels become a sorted attributes.labels array; no X-Labels (D157).
   {
     ingest.labels = undefined;
+    ingest.attrHeaders.length = 0;
     const { isError } = await callTool(stubClient, "grill_ingest", {
       token: "scope1",
       url: "https://example.com/doc.pdf",
-      labels: { b: "2", a: "1" },
+      labels: { b: "2", a: "1", " ": "skip" },
     });
-    const ok = !isError && ingest.labels === "a:1,b:2";
-    record("labels serialize to sorted X-Labels", ok, ok ? undefined : `X-Labels=${ingest.labels}`);
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && ingest.labels === undefined && h?.attributes === '{"labels":["a:1","b:2"]}' && h?.schema === undefined;
+    record("labels → sorted attributes.labels, no X-Labels", ok, ok ? undefined : `X-Labels=${ingest.labels} ${JSON.stringify(h)}`);
+  }
+  // 9b. Legacy labels merge after an explicit attributes.labels, de-duplicated
+  //     (grill_ingest_sync shares the path).
+  {
+    ingest.labels = undefined;
+    ingest.attrHeaders.length = 0;
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      labels: { team: "eng", a: "1" },
+      attributes: { labels: ["z:9", "team:eng"], year: 2024 },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && ingest.labels === undefined && h?.attributes === '{"labels":["z:9","team:eng","a:1"],"year":2024}';
+    record("labels merge into attributes.labels (explicit first, deduped)", ok, ok ? undefined : `X-Labels=${ingest.labels} ${JSON.stringify(h)} ${JSON.stringify(content)}`);
+  }
+  // 9c. attributes.labels that is not an array of strings cannot take the
+  //     legacy labels: invalid_input, never a silent drop; an already-invalid
+  //     value keeps its usual error; nothing is sent.
+  {
+    const cases: [unknown, string][] = [
+      ["team:eng", "must be an array of strings"],
+      [[1, 2], "must be an array of strings"],
+      [null, "null is not accepted"],
+      [[null], "null is not accepted"],
+      [["x", null], "null is not accepted"],
+    ];
+    for (const [labelsAttr, want] of cases) {
+      ingest.attrHeaders.length = 0;
+      const { isError, content } = await callTool(stubClient, "grill_ingest", {
+        token: "scope1",
+        url: "https://example.com/doc.pdf",
+        labels: { team: "eng" },
+        attributes: { labels: labelsAttr },
+      });
+      const ok = isError && content.code === "invalid_input" && (content.error ?? "").includes(want) && ingest.attrHeaders.length === 0;
+      record(`labels + attributes.labels=${JSON.stringify(labelsAttr)} → invalid_input`, ok, ok ? undefined : JSON.stringify(content));
+    }
+  }
+  // 9d. Attribute-rule errors with translated labels in play name the legacy
+  //     argument (element cap, size cap, schema type conflict).
+  {
+    const many: Record<string, string> = {};
+    for (let i = 0; i < 65; i++) many[`k${String(i).padStart(2, "0")}`] = "v";
+    const cases: [string, Record<string, unknown>, string, number][] = [
+      ["element cap", { labels: many }, "exceeds the cap of 64", 65],
+      ["size cap", { labels: { k: "v".repeat(2100) } }, "capped at 2048", 1],
+      ["schema type conflict", { labels: { team: "eng" }, attribute_schema: { labels: { type: "string" } } }, 'declared "string"', 1],
+      ["merge conflict", { labels: { team: "eng", a: "1" }, attributes: { labels: "x" } }, "must be an array of strings", 2],
+    ];
+    for (const [name, args, want, n] of cases) {
+      ingest.attrHeaders.length = 0;
+      const { isError, content } = await callTool(stubClient, "grill_ingest", { token: "scope1", url: "https://example.com/doc.pdf", ...args });
+      const err = content.error ?? "";
+      const ok =
+        isError && content.code === "invalid_input" && err.includes(want) &&
+        err.endsWith(`(includes ${n} entries translated from the legacy \`labels\` argument)`) && ingest.attrHeaders.length === 0;
+      record(`legacy labels hint: ${name}`, ok, ok ? undefined : JSON.stringify(content));
+    }
+  }
+  // 9e. Label keys sort by code point (Go's byte order), not UTF-16 units:
+  //     U+FF61 sorts before U+1F600, though its UTF-16 unit is higher.
+  {
+    ingest.attrHeaders.length = 0;
+    const { isError } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      labels: { "\u{1F600}": "1", "\uFF61": "2" },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && h?.attributes === '{"labels":["\\uff61:2","\\ud83d\\ude00:1"]}';
+    record("label keys sort by code point (matches Go)", ok, ok ? undefined : JSON.stringify(h));
   }
   // 10. url + file_path → invalid_input (mutual exclusivity).
   {
@@ -745,7 +839,8 @@ async function errorCodeTests(
     record("grill_attributes 503 → retryable upstream_error", ok, ok ? undefined : JSON.stringify(content));
   }
   // 13d. Typed attributes on ingest → X-Attributes / X-Attribute-Schema, keys
-  //      sorted, compact, non-ASCII escaped; labels keep working alongside.
+  //      sorted, compact, non-ASCII escaped; legacy labels ride along as
+  //      attributes.labels, never X-Labels.
   {
     ingest.attrHeaders.length = 0;
     ingest.labels = undefined;
@@ -760,14 +855,14 @@ async function errorCodeTests(
     // __proto__ is a legal name (it matches the regex) and must be sent, not
     // swallowed as a prototype assignment. The literal key in a JSON-RPC
     // payload arrives as an own property after JSON.parse.
-    const wantAttrs = '{"__proto__":"p","city":"Z\\u00fcrich","notes":"private","region":"emea","tags":["a","b"],"year":2024}';
+    const wantAttrs = '{"__proto__":"p","city":"Z\\u00fcrich","labels":["team:eng"],"notes":"private","region":"emea","tags":["a","b"],"year":2024}';
     const ok =
       !isError &&
       ingest.attrHeaders.length === 1 &&
       h?.attributes === wantAttrs &&
       h?.schema === '{"notes":{"type":"encrypted_text"}}' &&
-      ingest.labels === "team:eng";
-    record("ingest attributes → X-Attributes/X-Attribute-Schema + labels", ok, ok ? undefined : `${JSON.stringify(h)} labels=${ingest.labels} ${JSON.stringify(content)}`);
+      ingest.labels === undefined;
+    record("ingest attributes → X-Attributes/X-Attribute-Schema + labels as attribute", ok, ok ? undefined : `${JSON.stringify(h)} labels=${ingest.labels} ${JSON.stringify(content)}`);
   }
   // 13d2. __proto__ survives in attribute_schema too (null-prototype object there as well).
   {
@@ -1060,9 +1155,9 @@ async function httpModeTests(): Promise<void> {
       s.close(() => res(port));
     });
   });
-  const { POMA_API_KEY: _acc, GRILL_INGEST_ALLOWED_PREFIX: _pre, ...base } = process.env;
+  const { GRILL_INGEST_ALLOWED_PREFIX: _pre, ...base } = childEnv({ POMA_API_KEY: "smoke-fake-key" });
   const proc = spawn(process.execPath, [BINARY, "-http", `127.0.0.1:${port}`], {
-    env: { ...base, POMA_API_KEY: "smoke-fake-key" },
+    env: base,
     stdio: ["ignore", "ignore", "pipe"],
   });
   await new Promise<void>((res, rej) => {
@@ -1109,6 +1204,16 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  const deadAPI = createServer((req, res) => {
+    deadAPIHits.push(`${req.method} ${req.url}`);
+    res.statusCode = 418;
+    res.setHeader("content-type", "application/json");
+    res.end('{"error":"smoke test reached the default API host; pass POMA_API_BASE_URL to a stub"}');
+  });
+  deadAPIURL = await new Promise<string>((res) => {
+    deadAPI.listen(0, "127.0.0.1", () => res(`http://127.0.0.1:${(deadAPI.address() as AddressInfo).port}`));
+  });
+
   // Validation handlers all check token presence first; supply a placeholder
   // so the validation messages we're asserting on actually surface.
   const client = new MCPClient({ POMA_API_KEY: "smoke-fake-key" });
@@ -1151,6 +1256,13 @@ async function main(): Promise<void> {
   }
 
   await httpModeTests();
+
+  await new Promise<void>((res) => deadAPI.close(() => res()));
+  record(
+    "no request reached the default API host",
+    deadAPIHits.length === 0,
+    deadAPIHits.length === 0 ? undefined : deadAPIHits.join(", "),
+  );
 
   const passed = results.filter((r) => r.ok).length;
   const failed = results.length - passed;

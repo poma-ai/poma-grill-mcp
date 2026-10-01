@@ -193,14 +193,126 @@ func TestGrillIngestSendsAttributeHeaders(t *testing.T) {
 		t.Fatalf("requests = %d, want 1", len(reqs))
 	}
 	h := reqs[0]
-	if got := h.Get("X-Attributes"); got != `{"notes":"private","region":"emea","year":2024}` {
+	// Legacy labels keep working, but as attributes.labels (D157).
+	if got := h.Get("X-Attributes"); got != `{"labels":["team:eng"],"notes":"private","region":"emea","year":2024}` {
 		t.Errorf("X-Attributes = %q", got)
 	}
 	if got := h.Get("X-Attribute-Schema"); got != `{"notes":{"type":"encrypted_text"}}` {
 		t.Errorf("X-Attribute-Schema = %q", got)
 	}
-	if got := h.Get("X-Labels"); got != "team:eng" {
-		t.Errorf("X-Labels = %q, labels must keep working", got)
+	if _, ok := h["X-Labels"]; ok {
+		t.Errorf("X-Labels = %q, the legacy header must no longer be sent", h.Get("X-Labels"))
+	}
+}
+
+// Legacy labels merge into an explicit attributes.labels: explicit entries
+// first, then the translated ones in sorted-key order, duplicates dropped.
+func TestGrillIngestMergesLegacyLabelsIntoAttributes(t *testing.T) {
+	capt := startIngestStub(t)
+	_, out, err := GrillIngest(context.Background(), nil, GrillIngestInput{
+		Token:      "tok",
+		URL:        "https://example.com/doc.pdf",
+		Labels:     map[string]string{"team": "eng", "b": "2", "a": "1", " ": "skip"},
+		Attributes: rawMap(t, `{"labels":["z:9","team:eng"],"year":2024}`),
+	})
+	if err != nil || out.Error != "" {
+		t.Fatalf("unexpected error: %v / %s", err, out.Error)
+	}
+	h := capt.all()[0]
+	if got, want := h.Get("X-Attributes"), `{"labels":["z:9","team:eng","a:1","b:2"],"year":2024}`; got != want {
+		t.Errorf("X-Attributes = %s\nwant           %s", got, want)
+	}
+	if _, ok := h["X-Labels"]; ok {
+		t.Error("X-Labels must not be sent")
+	}
+}
+
+// An attributes.labels that is not an array of strings cannot take the legacy
+// labels: refused, never silently dropped. An attributes.labels that is
+// already invalid keeps its usual validation error.
+func TestGrillIngestLegacyLabelsConflict(t *testing.T) {
+	cases := []struct{ attrs, want string }{
+		{`{"labels":"team:eng"}`, "must be an array of strings"},
+		{`{"labels":[1,2]}`, "must be an array of strings"},
+		{`{"labels":null}`, "null is not accepted"},
+		// A null element must never become "" (json into []string would).
+		{`{"labels":[null]}`, "null is not accepted"},
+		{`{"labels":["x",null]}`, "null is not accepted"},
+		{`{"labels":[]}`, ""}, // empty explicit array merges fine
+	}
+	for _, c := range cases {
+		capt := startIngestStub(t)
+		_, out, _ := GrillIngest(context.Background(), nil, GrillIngestInput{
+			Token:      "tok",
+			URL:        "https://example.com/doc.pdf",
+			Labels:     map[string]string{"team": "eng"},
+			Attributes: rawMap(t, c.attrs),
+		})
+		if c.want == "" {
+			if out.Error != "" {
+				t.Errorf("%s: unexpected error %s", c.attrs, out.Error)
+			} else if got := capt.all()[0].Get("X-Attributes"); got != `{"labels":["team:eng"]}` {
+				t.Errorf("%s: X-Attributes = %q", c.attrs, got)
+			}
+			continue
+		}
+		if out.Code != CodeInvalidInput || !strings.Contains(out.Error, c.want) {
+			t.Errorf("%s: code=%s error=%q, want invalid_input containing %q", c.attrs, out.Code, out.Error, c.want)
+		}
+		if n := len(capt.all()); n != 0 {
+			t.Errorf("%s: %d ingest requests sent, want 0", c.attrs, n)
+		}
+	}
+}
+
+// Attribute-rule errors raised with translated labels in play name the legacy
+// source; without legacy labels the message is unchanged.
+func TestEncodeIngestMetaNamesLegacyLabels(t *testing.T) {
+	many := make(map[string]string, 65)
+	for i := 0; i < 65; i++ {
+		many[fmt.Sprintf("k%02d", i)] = "v"
+	}
+	cases := []struct {
+		name   string
+		labels map[string]string
+		attrs  string
+		schema string
+		want   string
+		n      int
+	}{
+		{"element cap", many, `{}`, ``, "exceeds the cap of 64", 65},
+		{"size cap", map[string]string{"k": strings.Repeat("v", 2100)}, `{}`, ``, "capped at 2048", 1},
+		{"schema type conflict", map[string]string{"team": "eng"}, `{}`, `{"labels":{"type":"string"}}`, `declared "string"`, 1},
+		{"merge conflict", map[string]string{"team": "eng", "a": "1"}, `{"labels":"x"}`, ``, "must be an array of strings", 2},
+		{"dedup counts only added", map[string]string{"team": "eng", "a": "1"}, `{"labels":["team:eng"]}`, `{"labels":{"type":"string"}}`, `declared "string"`, 1},
+	}
+	for _, c := range cases {
+		var schema map[string]json.RawMessage
+		if c.schema != "" {
+			schema = rawMap(t, c.schema)
+		}
+		_, err := encodeIngestMeta(labelItemsFromMap(c.labels), labelsSourceArg, rawMap(t, c.attrs), schema)
+		hint := fmt.Sprintf("(includes %d entries translated from the legacy `labels` argument)", c.n)
+		if err == nil || !strings.Contains(err.Error(), c.want) || !strings.HasSuffix(err.Error(), hint) {
+			t.Errorf("%s: err = %v, want %q ending %q", c.name, err, c.want, hint)
+		}
+	}
+	// No legacy labels: no hint.
+	_, err := encodeIngestMeta(nil, labelsSourceArg, rawMap(t, `{"labels":["x"]}`), rawMap(t, `{"labels":{"type":"string"}}`))
+	if err == nil || strings.Contains(err.Error(), "legacy") {
+		t.Errorf("err = %v, want an error without the legacy hint", err)
+	}
+}
+
+// Without legacy labels an attributes.labels of any valid shape passes through
+// untouched (no merge happens).
+func TestEncodeIngestMetaNoLabelsLeavesAttributesAlone(t *testing.T) {
+	h, err := encodeIngestMeta(nil, labelsSourceArg, rawMap(t, `{"labels":"plain"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Attributes != `{"labels":"plain"}` {
+		t.Errorf("Attributes = %q", h.Attributes)
 	}
 }
 

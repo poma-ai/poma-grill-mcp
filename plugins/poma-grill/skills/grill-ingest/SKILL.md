@@ -46,8 +46,11 @@ content when omitted), typed `attributes` / `attribute_schema` (next section), a
 `labels`.
 
 `labels` is **legacy and being retired in favour of attributes** — prefer `attributes` for
-new work. It still works unchanged: a flat `{key: value}` map sent as the `X-Labels` header;
-avoid `:` and `,` in label keys and values, they are the wire delimiters.
+new work. It still works: a flat `{key: value}` map, sent as the `labels` attribute
+(`"key:value"` strings in `attributes.labels`, after any you pass there; no `X-Labels`
+header). Grill types it `[]encrypted_text`, matched by token, unless the project already
+owns `labels` with another type, which then governs. Labels count against the attribute
+limits (64 elements, 64 names, 2048 characters). Avoid `:` in label keys.
 
 ## Typed attributes: call `grill_attributes` first
 
