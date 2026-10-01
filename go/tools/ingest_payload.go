@@ -176,6 +176,25 @@ func resolveGrillIngestPayload(input GrillIngestInput) (data []byte, filename st
 	return data, filename, nil
 }
 
+// uploadIngestMeta reads the caller's X-Labels, X-Attributes and
+// X-Attribute-Schema headers off an /ingest-upload request and encodes them
+// as the upstream ingest metadata, with the same validation the MCP tools
+// apply to their arguments.
+func uploadIngestMeta(r *http.Request) (ingestHeaders, error) {
+	var attrs, schema map[string]json.RawMessage
+	if v := strings.TrimSpace(r.Header.Get("X-Attributes")); v != "" {
+		if err := json.Unmarshal([]byte(v), &attrs); err != nil || attrs == nil {
+			return ingestHeaders{}, fmt.Errorf("X-Attributes must be a JSON object mapping attribute name to value")
+		}
+	}
+	if v := strings.TrimSpace(r.Header.Get("X-Attribute-Schema")); v != "" {
+		if err := json.Unmarshal([]byte(v), &schema); err != nil || schema == nil {
+			return ingestHeaders{}, fmt.Errorf(`X-Attribute-Schema must be a JSON object like {"name": {"type": "encrypted_text"}}`)
+		}
+	}
+	return encodeIngestMeta(labelItemsFromHeader(r.Header.Get("X-Labels")), attrs, schema)
+}
+
 // HandleIngestUpload serves POST /ingest-upload in HTTP mode: raw body (octet-stream)
 // or multipart field "file". Auth: same as MCP (x-api-key / Bearer / POMA_API_KEY).
 // Filename: query filename=, header X-Filename, multipart filename, or upload.bin.
@@ -275,8 +294,15 @@ func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
 	// Falls back to POMA_PROJECT_ID env var when the header is absent,
 	// allowing server-wide default project scoping for the HTTP upload endpoint.
 	projectID := getProjectID(r.Header.Get("X-Project-ID"))
-	// Forward any X-Labels the caller supplied on the upload request.
-	body, st, err := grillIngestData(c, data, filename, projectID, ingestHeaders{Labels: r.Header.Get("X-Labels")})
+	// Caller metadata: a legacy X-Labels header is translated into
+	// attributes.labels and merged with any X-Attributes / X-Attribute-Schema
+	// the caller sent; only X-Attributes goes upstream, never X-Labels (D157).
+	meta, merr := uploadIngestMeta(r)
+	if merr != nil {
+		writeIngestUploadError(w, http.StatusBadRequest, GrillError{Error: merr.Error(), Code: CodeInvalidInput})
+		return
+	}
+	body, st, err := grillIngestData(c, data, filename, projectID, meta)
 	if err != nil {
 		// Network/client error reaching the Grill API — transient, retryable.
 		writeIngestUploadError(w, http.StatusBadGateway, GrillError{Error: err.Error(), Code: CodeTransportError, Retryable: isRetryableCode(CodeTransportError, 0)})

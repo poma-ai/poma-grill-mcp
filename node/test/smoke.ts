@@ -455,7 +455,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       res.end(JSON.stringify({ ...defaultProject, id: "242d", project_id: "242d", name: "immoscout", is_default: false }));
       return;
     }
-    // Ingest — capture X-Remote-URL / X-Labels and return a job_id.
+    // Ingest — capture X-Remote-URL / X-Labels (must stay absent) and return a job_id.
     if (u.pathname === "/index4ai/v1/ingest") {
       ingest.remoteURL = (req.headers["x-remote-url"] as string | undefined) ?? undefined;
       ingest.labels = (req.headers["x-labels"] as string | undefined) ?? undefined;
@@ -654,16 +654,54 @@ async function errorCodeTests(
       content.scope?.project_name === "Default Workspace";
     record("url ingest sends X-Remote-URL + returns job_id", ok, ok ? undefined : `job_id=${content.job_id} remoteURL=${ingest.remoteURL}`);
   }
-  // 9. Labels serialize to a sorted X-Labels header.
+  // 9. Legacy labels become a sorted attributes.labels array; no X-Labels (D157).
   {
     ingest.labels = undefined;
+    ingest.attrHeaders.length = 0;
     const { isError } = await callTool(stubClient, "grill_ingest", {
       token: "scope1",
       url: "https://example.com/doc.pdf",
-      labels: { b: "2", a: "1" },
+      labels: { b: "2", a: "1", " ": "skip" },
     });
-    const ok = !isError && ingest.labels === "a:1,b:2";
-    record("labels serialize to sorted X-Labels", ok, ok ? undefined : `X-Labels=${ingest.labels}`);
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && ingest.labels === undefined && h?.attributes === '{"labels":["a:1","b:2"]}' && h?.schema === undefined;
+    record("labels → sorted attributes.labels, no X-Labels", ok, ok ? undefined : `X-Labels=${ingest.labels} ${JSON.stringify(h)}`);
+  }
+  // 9b. Legacy labels merge after an explicit attributes.labels, de-duplicated
+  //     (grill_ingest_sync shares the path).
+  {
+    ingest.labels = undefined;
+    ingest.attrHeaders.length = 0;
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      labels: { team: "eng", a: "1" },
+      attributes: { labels: ["z:9", "team:eng"], year: 2024 },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && ingest.labels === undefined && h?.attributes === '{"labels":["z:9","team:eng","a:1"],"year":2024}';
+    record("labels merge into attributes.labels (explicit first, deduped)", ok, ok ? undefined : `X-Labels=${ingest.labels} ${JSON.stringify(h)} ${JSON.stringify(content)}`);
+  }
+  // 9c. attributes.labels that is not an array of strings cannot take the
+  //     legacy labels: invalid_input, never a silent drop; an already-invalid
+  //     value keeps its usual error; nothing is sent.
+  {
+    const cases: [unknown, string][] = [
+      ["team:eng", "must be an array of strings"],
+      [[1, 2], "must be an array of strings"],
+      [null, "null is not accepted"],
+    ];
+    for (const [labelsAttr, want] of cases) {
+      ingest.attrHeaders.length = 0;
+      const { isError, content } = await callTool(stubClient, "grill_ingest", {
+        token: "scope1",
+        url: "https://example.com/doc.pdf",
+        labels: { team: "eng" },
+        attributes: { labels: labelsAttr },
+      });
+      const ok = isError && content.code === "invalid_input" && (content.error ?? "").includes(want) && ingest.attrHeaders.length === 0;
+      record(`labels + attributes.labels=${JSON.stringify(labelsAttr)} → invalid_input`, ok, ok ? undefined : JSON.stringify(content));
+    }
   }
   // 10. url + file_path → invalid_input (mutual exclusivity).
   {
@@ -745,7 +783,8 @@ async function errorCodeTests(
     record("grill_attributes 503 → retryable upstream_error", ok, ok ? undefined : JSON.stringify(content));
   }
   // 13d. Typed attributes on ingest → X-Attributes / X-Attribute-Schema, keys
-  //      sorted, compact, non-ASCII escaped; labels keep working alongside.
+  //      sorted, compact, non-ASCII escaped; legacy labels ride along as
+  //      attributes.labels, never X-Labels.
   {
     ingest.attrHeaders.length = 0;
     ingest.labels = undefined;
@@ -760,14 +799,14 @@ async function errorCodeTests(
     // __proto__ is a legal name (it matches the regex) and must be sent, not
     // swallowed as a prototype assignment. The literal key in a JSON-RPC
     // payload arrives as an own property after JSON.parse.
-    const wantAttrs = '{"__proto__":"p","city":"Z\\u00fcrich","notes":"private","region":"emea","tags":["a","b"],"year":2024}';
+    const wantAttrs = '{"__proto__":"p","city":"Z\\u00fcrich","labels":["team:eng"],"notes":"private","region":"emea","tags":["a","b"],"year":2024}';
     const ok =
       !isError &&
       ingest.attrHeaders.length === 1 &&
       h?.attributes === wantAttrs &&
       h?.schema === '{"notes":{"type":"encrypted_text"}}' &&
-      ingest.labels === "team:eng";
-    record("ingest attributes → X-Attributes/X-Attribute-Schema + labels", ok, ok ? undefined : `${JSON.stringify(h)} labels=${ingest.labels} ${JSON.stringify(content)}`);
+      ingest.labels === undefined;
+    record("ingest attributes → X-Attributes/X-Attribute-Schema + labels as attribute", ok, ok ? undefined : `${JSON.stringify(h)} labels=${ingest.labels} ${JSON.stringify(content)}`);
   }
   // 13d2. __proto__ survives in attribute_schema too (null-prototype object there as well).
   {

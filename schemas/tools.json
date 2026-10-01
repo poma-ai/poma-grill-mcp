@@ -83,7 +83,7 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Legacy — being retired in favour of attributes; prefer attributes for new work. Optional key:value labels to attach to the ingested document, e.g. {\"team\":\"eng\"}. Sent as the X-Labels header. Avoid ':' and ',' in keys or values (used as delimiters).",
+            "description": "Legacy — being retired in favour of attributes; prefer attributes for new work. Optional key:value labels to attach to the ingested document, e.g. {\"team\":\"eng\"}. Translated into the labels attribute: each pair becomes a \"key:value\" string in attributes.labels (sorted by key, appended after any labels you pass in attributes, duplicates dropped), which grill stores as []encrypted_text; no X-Labels header is sent. Avoid ':' in keys (it separates key from value).",
             "type": "object"
           },
           "project_id": {
@@ -237,7 +237,7 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Legacy — being retired in favour of attributes; prefer attributes for new work. Optional key:value labels to attach to the ingested document, e.g. {\"team\":\"eng\"}. Sent as the X-Labels header. Avoid ':' and ',' in keys or values (used as delimiters).",
+            "description": "Legacy — being retired in favour of attributes; prefer attributes for new work. Optional key:value labels to attach to the ingested document, e.g. {\"team\":\"eng\"}. Translated into the labels attribute: each pair becomes a \"key:value\" string in attributes.labels (sorted by key, appended after any labels you pass in attributes, duplicates dropped), which grill stores as []encrypted_text; no X-Labels header is sent. Avoid ':' in keys (it separates key from value).",
             "type": "object"
           },
           "project_id": {

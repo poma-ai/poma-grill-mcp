@@ -105,7 +105,7 @@ Once configured, ask the agent something like:
 
 > "Ingest `~/docs/report.pdf` with POMA Grill, then search it for 'coverage limits'"
 
-For large files, pass `file_path` rather than `file_base64` so the server reads bytes from disk instead of embedding them in JSON. To ingest web content, pass `url` instead — the POMA Grill server fetches and ingests it (the MCP does not download it). All three inputs are mutually exclusive; `grill_ingest`, `grill_ingest_sync` and `grill_ingest_batch` accept typed `attributes` (plus `attribute_schema` for types the value cannot express, only for names present in `attributes`) — call `grill_attributes` first and reuse existing names. `grill_ingest` / `grill_ingest_sync` also accept legacy `{key: value}` `labels`, which are being retired in favour of attributes.
+For large files, pass `file_path` rather than `file_base64` so the server reads bytes from disk instead of embedding them in JSON. To ingest web content, pass `url` instead — the POMA Grill server fetches and ingests it (the MCP does not download it). All three inputs are mutually exclusive; `grill_ingest`, `grill_ingest_sync` and `grill_ingest_batch` accept typed `attributes` (plus `attribute_schema` for types the value cannot express, only for names present in `attributes`) — call `grill_attributes` first and reuse existing names. `grill_ingest` / `grill_ingest_sync` also accept legacy `{key: value}` `labels`, which are being retired in favour of attributes: they are translated into the `labels` attribute (`"key:value"` strings in `attributes.labels`, after any you pass there) and no `X-Labels` header is sent.
 
 ## Modes
 

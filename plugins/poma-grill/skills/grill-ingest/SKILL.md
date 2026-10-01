@@ -46,8 +46,9 @@ content when omitted), typed `attributes` / `attribute_schema` (next section), a
 `labels`.
 
 `labels` is **legacy and being retired in favour of attributes** — prefer `attributes` for
-new work. It still works unchanged: a flat `{key: value}` map sent as the `X-Labels` header;
-avoid `:` and `,` in label keys and values, they are the wire delimiters.
+new work. It still works: a flat `{key: value}` map, translated into the `labels`
+attribute (`"key:value"` strings in `attributes.labels`, after any you pass there);
+no `X-Labels` header is sent. Avoid `:` in label keys, it separates key from value.
 
 ## Typed attributes: call `grill_attributes` first
 

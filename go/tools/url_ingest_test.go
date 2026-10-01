@@ -4,30 +4,34 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
-// serializeLabels must produce a deterministic, sorted "key:value,…" header and
-// skip empty keys — matching the Node serializeLabels byte-for-byte.
-func TestSerializeLabelsSorted(t *testing.T) {
-	got := serializeLabels(map[string]string{"b": "2", "a": "1", "  ": "skip"})
-	if got != "a:1,b:2" {
-		t.Fatalf("serializeLabels = %q, want %q", got, "a:1,b:2")
+// labelItemsFromMap must produce deterministic, key-sorted "key:value" items and
+// skip empty keys — matching the Node labelItemsFromMap.
+func TestLabelItemsFromMapSorted(t *testing.T) {
+	got := labelItemsFromMap(map[string]string{"b": "2", "a": "1", "  ": "skip"})
+	if strings.Join(got, ",") != "a:1,b:2" || len(got) != 2 {
+		t.Fatalf("labelItemsFromMap = %q, want [a:1 b:2]", got)
 	}
-	if serializeLabels(nil) != "" {
-		t.Fatal("serializeLabels(nil) must be empty")
+	if len(labelItemsFromMap(nil)) != 0 {
+		t.Fatal("labelItemsFromMap(nil) must be empty")
 	}
 }
 
 // grill_ingest with a url must POST /ingest carrying X-Remote-URL (and the
-// serialized X-Labels), no file body, and return the parsed job_id.
+// labels as attributes.labels, no X-Labels), no file body, and return the
+// parsed job_id.
 func TestGrillIngestURLSendsRemoteURLAndLabels(t *testing.T) {
-	var gotRemoteURL, gotLabels string
+	var gotRemoteURL, gotAttrs string
+	var gotLabels []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/index4ai/v1/ingest":
 			gotRemoteURL = r.Header.Get("X-Remote-URL")
-			gotLabels = r.Header.Get("X-Labels")
+			gotAttrs = r.Header.Get("X-Attributes")
+			gotLabels = r.Header.Values("X-Labels")
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"job_id":"job-url-1"}`))
 		case "/index4ai/v1/projects":
@@ -58,8 +62,11 @@ func TestGrillIngestURLSendsRemoteURLAndLabels(t *testing.T) {
 	if gotRemoteURL != "https://example.com/doc.pdf" {
 		t.Fatalf("X-Remote-URL = %q, want the input url", gotRemoteURL)
 	}
-	if gotLabels != "a:1,b:2" {
-		t.Fatalf("X-Labels = %q, want %q", gotLabels, "a:1,b:2")
+	if gotAttrs != `{"labels":["a:1","b:2"]}` {
+		t.Fatalf("X-Attributes = %q, want %q", gotAttrs, `{"labels":["a:1","b:2"]}`)
+	}
+	if len(gotLabels) != 0 {
+		t.Fatalf("X-Labels = %q, the legacy header must not be sent", gotLabels)
 	}
 }
 

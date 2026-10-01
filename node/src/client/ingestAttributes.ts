@@ -16,15 +16,18 @@ const grillTypeNames = [
   "bool", "datetime", "encrypted_text", "float", "int", "string",
 ];
 
-/** Optional per-document metadata headers of a grill ingest; empty = not sent. */
+/**
+ * Optional per-document metadata headers of a grill ingest; empty = not sent.
+ * There is deliberately no X-Labels field: our clients never send the legacy
+ * header (D157). Legacy labels are translated into attributes.labels by
+ * encodeIngestMeta instead.
+ */
 export interface IngestHeaders {
-  labels?: string; // X-Labels
   attributes?: string; // X-Attributes
   attributeSchema?: string; // X-Attribute-Schema
 }
 
 export function applyIngestHeaders(headers: Record<string, string>, meta: IngestHeaders): void {
-  if (meta.labels) headers["X-Labels"] = meta.labels;
   if (meta.attributes) headers["X-Attributes"] = meta.attributes;
   if (meta.attributeSchema) headers["X-Attribute-Schema"] = meta.attributeSchema;
 }
@@ -244,4 +247,72 @@ export function encodeIngestAttributes(
   }
 
   return { attributes, attributeSchema };
+}
+
+// The typed attribute the legacy labels move into. Grill declares it
+// []encrypted_text on first use (D157), so no attribute_schema entry is needed.
+const labelsAttributeName = "labels";
+
+/**
+ * Renders the legacy `labels` tool argument as "key:value" items: only string
+ * values kept, empty/whitespace-only keys skipped, keys sorted — the same order
+ * and filtering the retired X-Labels serializer used. Mirrors Go labelItemsFromMap.
+ */
+export function labelItemsFromArg(arg: unknown): string[] {
+  if (!isPlainObject(arg)) return [];
+  return Object.keys(arg)
+    .filter((k) => k.trim() !== "" && typeof arg[k] === "string")
+    .sort()
+    .map((k) => `${k}:${arg[k] as string}`);
+}
+
+/**
+ * Returns attrsArg with the legacy label items merged into attributes.labels:
+ * explicit entries first, then the translated items, duplicates dropped.
+ * attrsArg itself is not modified; with no items it is returned unchanged.
+ * Throws when attributes.labels exists but is not an array of strings — the
+ * items are never silently dropped. A non-object attrsArg is returned as is so
+ * encodeIngestAttributes reports its usual error.
+ */
+export function mergeLabelsAttribute(attrsArg: unknown, items: string[]): unknown {
+  if (items.length === 0) return attrsArg;
+  if (attrsArg !== undefined && attrsArg !== null && !isPlainObject(attrsArg)) return attrsArg;
+  const src: Record<string, unknown> = isPlainObject(attrsArg) ? attrsArg : {};
+  const merged: string[] = [];
+  if (Object.prototype.hasOwnProperty.call(src, labelsAttributeName)) {
+    const explicit = src[labelsAttributeName];
+    if (!Array.isArray(explicit) || !explicit.every((e) => typeof e === "string")) {
+      throw new Error(
+        `attributes.labels must be an array of strings when the legacy labels argument is also given, so the two can be merged; got ${JSON.stringify(explicit)}`,
+      );
+    }
+    for (const e of explicit as string[]) if (!merged.includes(e)) merged.push(e);
+  }
+  for (const it of items) if (!merged.includes(it)) merged.push(it);
+  // Null-prototype copy, as in compactASCIIJSON: a "__proto__" name must stay
+  // an own property so validation still sees (and refuses) it.
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const k of Object.keys(src)) out[k] = src[k];
+  out[labelsAttributeName] = merged;
+  return out;
+}
+
+/**
+ * Builds the ingest metadata headers from the legacy `labels` argument plus
+ * `attributes` / `attribute_schema`: the labels are merged into
+ * attributes.labels and the result goes through encodeIngestAttributes, so the
+ * merged labels obey every attribute rule (64 elements, 2048-character header).
+ * When the merge is impossible, the attributes are first validated as given so
+ * an input that was already invalid reports its usual error. Mirrors Go
+ * encodeIngestMeta.
+ */
+export function encodeIngestMeta(labelsArg: unknown, attrsArg: unknown, schemaArg: unknown): IngestHeaders {
+  let merged: unknown;
+  try {
+    merged = mergeLabelsAttribute(attrsArg, labelItemsFromArg(labelsArg));
+  } catch (mergeErr) {
+    encodeIngestAttributes(attrsArg, schemaArg);
+    throw mergeErr;
+  }
+  return encodeIngestAttributes(merged, schemaArg);
 }
