@@ -154,8 +154,12 @@ func WithAPIToken(ctx context.Context, token string) context.Context {
 	return context.WithValue(ctx, contextKeyAPIToken{}, token)
 }
 
+// grillClient builds the API client for one tool call; see apiTransport for the
+// origin and trace headers it adds.
 func grillClient(token string) *client.Client {
-	return client.New(apiBaseURL(), token)
+	c := client.New(apiBaseURL(), token)
+	c.HTTP.Transport = withAPITransport(c.HTTP.Transport)
+	return c
 }
 
 // getProjectID resolves the project ID with priority: arg > POMA_PROJECT_ID env var.
