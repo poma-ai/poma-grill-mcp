@@ -56,30 +56,19 @@ jobs:
         working-directory: node
         run: npm run smoke
 
-      - name: Determine provenance support
-        id: provenance
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # npm provenance attestations are published to Sigstore's public
-          # transparency log and only work when the source repo is public.
-          # Auto-detect so a future visibility change lights up provenance on
-          # the next release without a workflow edit.
-          VISIBILITY=$(gh repo view --json visibility --jq '.visibility' 2>/dev/null || echo UNKNOWN)
-          echo "visibility=$VISIBILITY"
-          if [ "$VISIBILITY" = "PUBLIC" ]; then
-            echo "flag=--provenance" >> "$GITHUB_OUTPUT"
-            echo "Repo is PUBLIC: provenance attestation will be requested."
-          else
-            echo "flag=" >> "$GITHUB_OUTPUT"
-            echo "::warning::Repo visibility is ${VISIBILITY}; publishing without --provenance. Make the repo public to enable supply-chain attestation on future releases."
-          fi
+      # Trusted publishing: npm exchanges this job's GitHub OIDC token (id-token: write)
+      # for a short-lived publish token, so no NPM_TOKEN secret exists to expire. The
+      # exchange needs npm >= 11.5.1; Node 20 bundles npm 10, which falls back to the
+      # token in .npmrc. Requires a trusted publisher in the package settings on
+      # npmjs.com: repo poma-ai/poma-grill-mcp, workflow release-node.yml, no environment.
+      # A missing or mismatched publisher still fails as an opaque E404 on the PUT; the
+      # failed exchange is only logged at verbose level, hence --loglevel verbose.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@^11.5.1
 
       - name: Publish to npm
         working-directory: node
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public ${{ steps.provenance.outputs.flag }}
+        run: npm publish --access public --provenance --loglevel verbose
 
       - name: Create and push tag
         env:
