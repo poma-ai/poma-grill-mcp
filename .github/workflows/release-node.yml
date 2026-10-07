@@ -5,25 +5,34 @@ on:
     branches:
       - release-node
 
-permissions:
-  contents: write
-  id-token: write
+# Each job declares only what it needs. Only the publish job can mint an OIDC
+# token, and it runs no project or dependency code.
+permissions: {}
+
+# Two quick pushes would both pass the "not already published" check.
+concurrency:
+  group: release-node
+  cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Node
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 20
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Read package version
         id: version
@@ -48,35 +57,87 @@ jobs:
           fi
           echo "Version ${VERSION} not yet on npm; proceeding."
 
+      # Dependency install scripts never run: the tarball is built here.
       - name: Install dependencies
         working-directory: node
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Smoke test
         working-directory: node
         run: npm run smoke
 
-      # Trusted publishing: npm exchanges this job's GitHub OIDC token (id-token: write)
-      # for a short-lived publish token, so no NPM_TOKEN secret exists to expire. The
-      # exchange needs npm >= 11.5.1; Node 20 bundles npm 10, which falls back to the
-      # token in .npmrc. Requires a trusted publisher in the package settings on
-      # npmjs.com: repo poma-ai/poma-grill-mcp, workflow release-node.yml, no environment.
-      # A missing or mismatched publisher still fails as an opaque E404 on the PUT; the
-      # failed exchange is only logged at verbose level, hence --loglevel verbose.
-      - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@^11.5.1
+      # Publishing a tarball (a ./ path) runs no lifecycle scripts, so build
+      # explicitly before packing.
+      - name: Build and pack
+        working-directory: node
+        run: |
+          npm run build
+          npm pack
+
+      - name: Upload package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-package
+          path: node/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Approval gate: the npm-publish environment only accepts the release-node
+    # branch and needs a reviewer's approval. The npm trusted publisher is bound
+    # to this environment, so a token minted outside it cannot publish.
+    environment: npm-publish
+    permissions:
+      id-token: write
+
+    steps:
+      # Trusted publishing exchanges the job's OIDC token for a short-lived
+      # publish token and needs npm >= 11.5.1, which Node 24 bundles. A failed
+      # exchange is only logged at verbose level and otherwise surfaces as an
+      # E404 on the PUT.
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Check npm supports trusted publishing
+        run: |
+          NPM_VERSION=$(npm --version)
+          if ! node -e 'const [a,b,c]=process.argv[1].split(".").map(Number); process.exit(a>11||(a===11&&(b>5||(b===5&&c>=1)))?0:1)' "$NPM_VERSION"; then
+            echo "::error::npm ${NPM_VERSION} is older than 11.5.1 and cannot do the OIDC exchange."
+            exit 1
+          fi
+          echo "npm ${NPM_VERSION}"
+
+      - name: Download package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-package
+          path: pkg
 
       - name: Publish to npm
-        working-directory: node
-        run: npm publish --access public --provenance --loglevel verbose
+        run: npm publish ./pkg/*.tgz --access public --provenance --loglevel verbose
+
+  release:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Create and push tag
         env:
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null; then
             echo "Tag ${TAG} already exists; skipping tag creation."
           else
             git tag -a "${TAG}" -m "Node release ${TAG}"
@@ -86,6 +147,6 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: ${{ steps.version.outputs.tag }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: ${{ needs.build.outputs.tag }}
           generate_release_notes: true
