@@ -79,8 +79,8 @@ local server. Swap the entry for the stdio form:
 }
 ```
 
-Install the binary via the Homebrew tap, `go install`, or a GitHub release — see the
-[repo README](https://github.com/poma-ai/poma-grill-mcp#readme). With the hosted
+Install the binary with `go install github.com/poma-ai/poma-grill-mcp/go/cmd/poma-grill-mcp@latest`
+or build it from source — see the [repo README](https://github.com/poma-ai/poma-grill-mcp#readme). With the hosted
 endpoint, ingest remote documents by `url` or small ones by `file_base64` instead.
 
 ## Tools the plugin exposes
