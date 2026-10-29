@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`poma-grill-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server wrapping the POMA Grill context engine API. It lets IDEs (Claude Desktop, Cursor, etc.) ingest documents and perform semantic search via MCP tools. Active tools include `grill_ingest` (+ variants), `grill_search`, `grill_jobs_status`, and `grill_docs_list`.
+`poma-grill-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server wrapping the POMA Grill context engine API. It lets IDEs (Claude Desktop, Cursor, etc.) ingest documents and perform semantic search via MCP tools. Active tools include `grill_ingest` (+ variants), `grill_search`, `grill_jobs_status`, `grill_docs_list`, `grill_attributes`, `grill_projects`, and `grill_explain`.
 
 ## Repo layout
 
@@ -35,6 +35,7 @@ cd node && npm run typecheck && npm run smoke
 ```
 
 `go install github.com/poma-ai/poma-grill-mcp/go/cmd/poma-grill-mcp@latest` works because the Go module is `github.com/poma-ai/poma-grill-mcp/go` (it lives in `go/`, so the module path carries the `/go` suffix) and the main package sits in `cmd/poma-grill-mcp` so the installed binary is named after it.
+Unit tests: `cd go && go test ./...` (Go) and `cd node && npm run smoke` (Node, against an offline stub API).
 
 ## Architecture
 
@@ -45,14 +46,14 @@ The server has two modes, selected at startup:
 
 **Flow for `grill_ingest`** (`go/tools/grill.go`):
 1. Accepts base64-encoded file + filename
-2. POSTs to POMA Grill API (`https://api.poma-ai.com/v3/grill/`)
-3. Reads SSE status stream (`https://api.poma-ai.com/status/v1`) until terminal state
+2. POSTs to `/ingest` on the index4ai API (`https://api.index4.ai/index4ai/v1`; index4ai serves the grill handlers at the root, without `/grill`)
+3. Reads SSE status stream (`https://api.index4.ai/status/v1`) until terminal state
 4. Sends each status event as an MCP progress notification
 5. Returns `job_id` and status events; `job_id` doubles as `doc_id` for search (unless the status carries a `grill` object — then `grill.doc_id` is the searchable document, see README "Dedup and re-ingest")
 
 **Flow for `grill_search`** (`go/tools/grill.go`):
 1. Accepts a natural-language query and optional `doc_filter` (= `job_id` from ingest)
-2. Routes to `/grill/searchInDoc` when `doc_filter` is set, `/grill/search` otherwise
+2. Routes to `/searchInDoc` when `doc_filter` is set, `/search` otherwise
 3. Returns concatenated context text for RAG prompting
 
 **Tool registration** is in `go/tools/tools.go`. `grill_docs_delete` is not yet wired up pending upstream `poma-cli` client support.
@@ -61,7 +62,7 @@ The server has two modes, selected at startup:
 
 **Authentication**: Per-call `token` argument takes precedence over `POMA_API_KEY` env var (resolved in `go/tools/common.go:getToken`).
 
-**API base URLs** can be overridden via `POMA_API_BASE_URL` and `POMA_STATUS_API_BASE_URL` env vars.
+**API base URLs** can be overridden via `POMA_API_BASE_URL` and `POMA_STATUS_API_BASE_URL` env vars. The console URL in user-facing messages comes from `POMA_CONSOLE_URL` (default `https://console.poma-ai.com`) through `consoleURL()` in Go and `consoleUrl()` in `node/`; never hardcode it.
 
 ## Key flags
 
@@ -77,4 +78,4 @@ Push to the `release` branch to trigger the CI pipeline (`.github/workflows/rele
 
 The canonical company domain is **`poma-ai.com`** (e.g. `api.poma-ai.com`, `storage.poma-ai.com`, emails `@poma-ai.com`; GitHub org `poma-ai`). **Never write `poma.ai`** — it is not our domain and has shipped broken links (Slack notifier, MCP examples). Always `poma-ai.com`; fix any `poma.ai` on sight.
 
-The POMA web console is **`console.poma-ai.com`**. **Never write `app.poma-ai.com`** — that URL does not exist. All user-facing links (API key generation, plan upgrades, project settings) point to `https://console.poma-ai.com`; fix any `app.poma-ai.com` on sight.
+The POMA web console is **`console.poma-ai.com`**. **Never write `app.poma-ai.com`** — that URL does not exist. All user-facing links (API key generation, plan upgrades, project settings) point to `https://console.poma-ai.com` unless `POMA_CONSOLE_URL` overrides it (the index4ai MCP now lives in `poma-ai/index4ai-mcp`); fix any `app.poma-ai.com` on sight.

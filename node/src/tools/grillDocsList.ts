@@ -27,7 +27,7 @@ const grillDocsMaxPages = 10;
 // metric must only count old, limit-unaware callers. Mirrors the Go client.
 const grillDocsPageLimit = 100;
 
-// One wire page of GET /grill/docs. On the currently deployed API
+// One wire page of GET /docs. On the currently deployed API
 // has_more/next_cursor/degraded are absent and default to their zero values,
 // which collapses the auto-paging loop to exactly one request — today's
 // single-request behavior.
@@ -76,7 +76,7 @@ export function grillDocsListNote(
 }
 
 // grillDocsList lists documents ingested for the authenticated namespace.
-// Mirrors the Go GrillDocsList handler: GET /grill/docs, transparently
+// Mirrors the Go GrillDocsList handler: GET /docs, transparently
 // following server-side pagination (has_more/next_cursor) and returning the
 // merged document list. If the response carries no pagination fields (old
 // API), this degrades to exactly one request — today's behavior.
@@ -99,7 +99,7 @@ export async function grillDocsList(
   // whether it is an auth/billing failure — which is fatal, not a transient
   // paging hiccup, and must abort the whole call even mid-loop.
   const fetchPage = async (cursor: string): Promise<GrillDocsPage | { err: GrillError; auth: boolean }> => {
-    const base = `/grill/docs?limit=${grillDocsPageLimit}`;
+    const base = `/docs?limit=${grillDocsPageLimit}`;
     const path = cursor === "" ? base : `${base}&cursor=${encodeURIComponent(cursor)}`;
     let res;
     try {

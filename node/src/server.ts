@@ -25,6 +25,7 @@ function packageVersion(): string {
     return "0.0.0";
   }
 }
+import { grillAttributes } from "./tools/grillAttributes.js";
 import { grillDocsList } from "./tools/grillDocsList.js";
 import { grillExplain } from "./tools/grillExplain.js";
 import { grillIngest } from "./tools/grillIngest.js";
@@ -36,6 +37,7 @@ import { grillSearch } from "./tools/grillSearch.js";
 import { grillProjects } from "./tools/grillProjects.js";
 
 const handlers: Record<string, ToolHandler> = {
+  grill_attributes: grillAttributes,
   grill_docs_list: grillDocsList,
   grill_explain: grillExplain,
   grill_ingest: grillIngest,

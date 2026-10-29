@@ -67,6 +67,13 @@ func (rw *responseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap lets http.ResponseController reach the underlying writer's Flush. Without it
+// every SSE event the SDK writes sits in the server's buffer: the
+// notifications/subscriptions/acknowledged event on a subscriptions/listen stream never
+// reaches the client, so Claude Code's connect waits ~25s for the ack to time out (the
+// OAuth dialog hangs after login), and progress notifications arrive only with the result.
+func (rw *responseWriter) Unwrap() http.ResponseWriter { return rw.ResponseWriter }
+
 func main() {
 	flag.Parse()
 

@@ -18,11 +18,23 @@ export type ToolHandler = (
   ctx: ToolContext,
 ) => Promise<CallToolResult>;
 
-const DEFAULT_API_BASE_URL = "https://api.poma-ai.com";
-const DEFAULT_VERSION_PREFIX = "/v3";
+const DEFAULT_API_BASE_URL = "https://api.index4.ai";
+const DEFAULT_VERSION_PREFIX = "/index4ai/v1";
 const DEFAULT_STATUS_PREFIX = "/status/v1";
 
 const VERSION_SUFFIX_RE = /\/v[0-9]+$/;
+
+const DEFAULT_CONSOLE_URL = "https://console.poma-ai.com";
+
+/**
+ * The web console that user-facing messages send people to (API keys, usage,
+ * project settings). POMA_CONSOLE_URL overrides it for another brand's
+ * deployment; mirrors consoleURL() in the Go server.
+ */
+export function consoleUrl(): string {
+  const v = (process.env.POMA_CONSOLE_URL ?? "").trim();
+  return v !== "" ? v.replace(/\/+$/, "") : DEFAULT_CONSOLE_URL;
+}
 
 export function getToken(arg: unknown): string {
   if (typeof arg === "string" && arg !== "") return arg;
@@ -104,26 +116,35 @@ function trimRight(s: string, ch: string): string {
   return s.slice(0, i);
 }
 
-export function apiBaseURL(): string {
-  const v = process.env.POMA_API_BASE_URL;
-  if (v && v !== "") {
-    const trimmed = trimRight(v, "/");
-    return VERSION_SUFFIX_RE.test(trimmed) ? trimmed : trimmed + DEFAULT_VERSION_PREFIX;
+// apiOrigin is the scheme://host of the API: POMA_API_BASE_URL with any path dropped,
+// so "https://api.index4.ai" and "https://api.index4.ai/index4ai/v1" both work.
+function apiOrigin(): string {
+  const v = trimRight((process.env.POMA_API_BASE_URL ?? "").trim(), "/");
+  if (v === "") return DEFAULT_API_BASE_URL;
+  try {
+    const u = new URL(v);
+    if (u.protocol && u.host) return u.protocol + "//" + u.host;
+  } catch {
+    // Not an absolute URL: use it as given.
   }
-  return DEFAULT_API_BASE_URL + DEFAULT_VERSION_PREFIX;
+  return v;
 }
 
+// apiBaseURL is the versioned API root, always <origin>/index4ai/v1. /index4ai/v1 serves
+// the grill handlers at the root (/index4ai/v1/ingest is /v3/grill/ingest). Any path on
+// POMA_API_BASE_URL is replaced rather than kept: a grill-era value such as
+// https://api.poma-ai.com/v3 would otherwise send every call to /v3/ingest, which does
+// not exist. Mirrors go/tools/common.go.
+export function apiBaseURL(): string {
+  return apiOrigin() + DEFAULT_VERSION_PREFIX;
+}
+
+// statusAPIBaseURL is the job-status SSE service. It is not under /index4ai/v1: the
+// gateway serves it at /status/v1 on the API host, so it hangs off apiOrigin.
 export function statusAPIBaseURL(): string {
-  const v = process.env.POMA_STATUS_API_BASE_URL;
-  if (v && v !== "") {
-    const trimmed = trimRight(v, "/");
-    return VERSION_SUFFIX_RE.test(trimmed) ? trimmed : trimmed + DEFAULT_STATUS_PREFIX;
-  }
-  const api = process.env.POMA_API_BASE_URL;
-  if (api && api !== "") {
-    return trimRight(api, "/") + DEFAULT_STATUS_PREFIX;
-  }
-  return DEFAULT_API_BASE_URL + DEFAULT_STATUS_PREFIX;
+  const v = trimRight((process.env.POMA_STATUS_API_BASE_URL ?? "").trim(), "/");
+  if (v !== "") return VERSION_SUFFIX_RE.test(v) ? v : v + DEFAULT_STATUS_PREFIX;
+  return apiOrigin() + DEFAULT_STATUS_PREFIX;
 }
 
 // Stable machine-readable error codes emitted alongside the human-readable
@@ -260,7 +281,7 @@ export function interpretAuthError(
     return {
       message:
         `${operation}: credits exceeded (HTTP 402). The account associated with the token provided via ${src} has no remaining credits. ` +
-        `Visit https://console.poma-ai.com to check your usage and upgrade your plan.`,
+        `Visit ${consoleUrl()} to check your usage and upgrade your plan.`,
       code: ErrorCode.PaymentRequired,
     };
   }
@@ -269,7 +290,7 @@ export function interpretAuthError(
     return {
       message:
         `${operation}: authentication failed (HTTP 401). The token provided via ${src} is invalid, expired, or malformed. ` +
-        `Generate a valid API key at https://console.poma-ai.com and set it as POMA_API_KEY or pass it as the token argument.`,
+        `Generate a valid API key at ${consoleUrl()} and set it as POMA_API_KEY or pass it as the token argument.`,
       code: ErrorCode.AuthExpired,
     };
   }
@@ -285,7 +306,7 @@ export function interpretAuthError(
   const text = new TextDecoder("utf-8").decode(body).trim();
   const projectProtectedMsg =
     `${operation}: this project is protected (HTTP 403). The token provided via ${src} is an account-level key, ` +
-    `but this project requires a project API key. Generate one at https://console.poma-ai.com in the project settings, ` +
+    `but this project requires a project API key. Generate one at ${consoleUrl()} in the project settings, ` +
     `or set the project to unprotected.`;
   const forbiddenMsg =
     `${operation}: access denied (HTTP 403). The token provided via ${src} does not have access to this project — ` +

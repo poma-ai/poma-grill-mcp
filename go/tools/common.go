@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -15,41 +16,57 @@ import (
 )
 
 const (
-	defaultAPIBaseURL    = "https://api.poma-ai.com"
-	defaultVersionPrefix = "/v3"
+	defaultAPIBaseURL    = "https://api.index4.ai"
+	defaultConsoleURL    = "https://console.poma-ai.com"
+	defaultVersionPrefix = "/index4ai/v1"
 	defaultStatusPrefix  = "/status/v1"
 )
 
 // apiBaseURLVersionSuffixRE matches a trailing API version path segment: /v then digits (e.g. /v2, /v10).
 var apiBaseURLVersionSuffixRE = regexp.MustCompile(`/v[0-9]+$`)
 
-func apiBaseURL() string {
-	// If POMA_API_BASE_URL is set, use it.
-	if v := os.Getenv("POMA_API_BASE_URL"); v != "" {
-		if apiBaseURLVersionSuffixRE.MatchString(v) {
-			// If it already has a version suffix, use it.
-			return strings.TrimRight(v, "/")
-		}
-		return strings.TrimRight(v, "/") + defaultVersionPrefix
+// apiOrigin is the scheme://host of the API: POMA_API_BASE_URL with any path dropped,
+// so "https://api.index4.ai" and "https://api.index4.ai/index4ai/v1" both work.
+func apiOrigin() string {
+	v := strings.TrimRight(strings.TrimSpace(os.Getenv("POMA_API_BASE_URL")), "/")
+	if v == "" {
+		return defaultAPIBaseURL
 	}
-	return defaultAPIBaseURL + defaultVersionPrefix
+	if u, err := url.Parse(v); err == nil && u.Scheme != "" && u.Host != "" {
+		return u.Scheme + "://" + u.Host
+	}
+	return v
 }
 
+// apiBaseURL is the versioned API root, always <origin>/index4ai/v1. /index4ai/v1 serves
+// the grill handlers at the root (/index4ai/v1/ingest is /v3/grill/ingest; poma-services-go
+// docs/api/index4ai/v1/openapi.yaml). Any path on POMA_API_BASE_URL is replaced rather
+// than kept: a grill-era value such as https://api.poma-ai.com/v3 would otherwise send
+// every call to /v3/ingest, which does not exist.
+func apiBaseURL() string {
+	return apiOrigin() + defaultVersionPrefix
+}
+
+// consoleURL is the web console that user-facing messages send people to (API keys,
+// usage, project settings). POMA_CONSOLE_URL overrides it for a deployment that serves
+// another brand: the index4ai MCP (mcp.index4.ai) points at console.index4.ai.
+func consoleURL() string {
+	if v := strings.TrimSpace(os.Getenv("POMA_CONSOLE_URL")); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return defaultConsoleURL
+}
+
+// statusAPIBaseURL is the job-status SSE service. It is not under /index4ai/v1: the
+// gateway serves it at /status/v1 on the API host, so it hangs off apiOrigin.
 func statusAPIBaseURL() string {
-	// If POMA_STATUS_API_BASE_URL is set, use it.
-	if v := os.Getenv("POMA_STATUS_API_BASE_URL"); v != "" {
+	if v := strings.TrimRight(strings.TrimSpace(os.Getenv("POMA_STATUS_API_BASE_URL")), "/"); v != "" {
 		if apiBaseURLVersionSuffixRE.MatchString(v) {
-			// If it already has a version suffix, use it.
-			return strings.TrimRight(v, "/")
+			return v
 		}
-		return strings.TrimRight(v, "/") + defaultStatusPrefix
+		return v + defaultStatusPrefix
 	}
-	// If POMA_API_BASE_URL is set, use it and append /status/v1.
-	if v := os.Getenv("POMA_API_BASE_URL"); v != "" {
-		return strings.TrimRight(v, "/") + defaultStatusPrefix
-	}
-	// Use default
-	return defaultAPIBaseURL + defaultStatusPrefix
+	return apiOrigin() + defaultStatusPrefix
 }
 
 // errResult returns a CallToolResult with IsError set. When the caller also
@@ -137,8 +154,12 @@ func WithAPIToken(ctx context.Context, token string) context.Context {
 	return context.WithValue(ctx, contextKeyAPIToken{}, token)
 }
 
+// grillClient builds the API client for one tool call; see apiTransport for the
+// origin and trace headers it adds.
 func grillClient(token string) *client.Client {
-	return client.New(apiBaseURL(), token)
+	c := client.New(apiBaseURL(), token)
+	c.HTTP.Transport = withAPITransport(c.HTTP.Transport)
+	return c
 }
 
 // getProjectID resolves the project ID with priority: arg > POMA_PROJECT_ID env var.
@@ -253,16 +274,16 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 	if statusCode == http.StatusPaymentRequired {
 		return fmt.Sprintf(
 			"%s: credits exceeded (HTTP 402). The account associated with the token provided via %s has no remaining credits. "+
-				"Visit https://console.poma-ai.com to check your usage and upgrade your plan.",
-			operation, src,
+				"Visit %s to check your usage and upgrade your plan.",
+			operation, src, consoleURL(),
 		), CodePaymentRequired
 	}
 
 	if statusCode == http.StatusUnauthorized {
 		return fmt.Sprintf(
 			"%s: authentication failed (HTTP 401). The token provided via %s is invalid, expired, or malformed. "+
-				"Generate a valid API key at https://console.poma-ai.com and set it as POMA_API_KEY or pass it as the token argument.",
-			operation, src,
+				"Generate a valid API key at %s and set it as POMA_API_KEY or pass it as the token argument.",
+			operation, src, consoleURL(),
 		), CodeAuthExpired
 	}
 
@@ -282,9 +303,9 @@ func interpretAuthError(ctx context.Context, inputToken string, statusCode int, 
 		code := strings.Trim(string(errResp.Code), `"`)
 		projectProtectedMsg := fmt.Sprintf(
 			"%s: this project is protected (HTTP 403). The token provided via %s is an account-level key, "+
-				"but this project requires a project API key. Generate one at https://console.poma-ai.com in the project settings, "+
+				"but this project requires a project API key. Generate one at %s in the project settings, "+
 				"or set the project to unprotected.",
-			operation, src,
+			operation, src, consoleURL(),
 		)
 		forbiddenMsg := fmt.Sprintf(
 			"%s: access denied (HTTP 403). The token provided via %s does not have access to this project — "+

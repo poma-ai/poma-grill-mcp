@@ -11,10 +11,11 @@
 //   npm run smoke
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface, type Interface } from "node:readline";
 
@@ -22,7 +23,28 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const NODE_ROOT = resolve(HERE, "..");
 const BINARY = resolve(NODE_ROOT, "dist", "index.js");
 
+// No smoke test may reach a live POMA API. Every child server starts from an
+// environment with ALL POMA_* variables removed (POMA_API_KEY, POMA_API_BASE_URL,
+// POMA_STATUS_API_BASE_URL, POMA_PROJECT_ID, POMA_CONSOLE_URL — everything the
+// server reads for a token, a host or a scope), and its API host defaults to a
+// dead stub started in main(). A test that wants an API passes its own
+// POMA_API_BASE_URL; one that forgets lands on the dead stub, and the run fails
+// listing the stray requests, instead of reaching https://api.index4.ai with
+// whatever key the developer has exported.
+let deadAPIURL = "";
+const deadAPIHits: string[] = [];
+
+function childEnv(overrides: Record<string, string>): Record<string, string> {
+  const base: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !k.startsWith("POMA_")) base[k] = v;
+  }
+  if (deadAPIURL === "") throw new Error("dead API stub not started");
+  return { ...base, POMA_API_BASE_URL: deadAPIURL, ...overrides };
+}
+
 const EXPECTED_TOOLS = [
+  "grill_attributes",
   "grill_docs_list",
   "grill_explain",
   "grill_ingest",
@@ -50,7 +72,7 @@ class MCPClient {
 
   constructor(env: Record<string, string>) {
     this.proc = spawn(process.execPath, [BINARY, "-input", "-"], {
-      env: { ...process.env, ...env },
+      env: childEnv(env),
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.proc.stderr.setEncoding("utf8");
@@ -84,6 +106,24 @@ class MCPClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         rejectResponse(new Error(`timeout waiting for response to ${method} (id=${id}); stderr so far: ${this.stderr}`));
+      }, 10_000);
+      this.pending.set(id, (resp) => {
+        clearTimeout(timer);
+        resolveResponse(resp);
+      });
+      this.proc.stdin.write(payload + "\n");
+    });
+  }
+
+  // requestRaw sends params as a literal JSON string, for inputs JSON.stringify
+  // cannot produce (an overflowing number such as 1e400).
+  async requestRaw(method: string, paramsJSON: string): Promise<JSONRPCResponse> {
+    const id = this.nextId++;
+    const payload = `{"jsonrpc":"2.0","id":${id},"method":${JSON.stringify(method)},"params":${paramsJSON}}`;
+    return new Promise((resolveResponse, rejectResponse) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        rejectResponse(new Error(`timeout waiting for response to ${method} (id=${id})`));
       }, 10_000);
       this.pending.set(id, (resp) => {
         clearTimeout(timer);
@@ -193,7 +233,7 @@ async function offlineTests(client: MCPClient): Promise<void> {
 //
 // The stub selects a scenario from the Bearer token, so a single server + a
 // single spawned MCP process cover every pagination shape. Cursor plumbing:
-// the tool must send GET /v3/grill/docs?cursor=<next_cursor> for follow-ups.
+// the tool must send GET /index4ai/v1/docs?cursor=<next_cursor> for follow-ups.
 
 function docsPageBody(
   docIDs: string[],
@@ -218,7 +258,7 @@ function startStubAPI(): Promise<{ url: string; docsRequests: Map<string, number
   const server: Server = createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://localhost");
     res.setHeader("content-type", "application/json");
-    if (u.pathname !== "/v3/grill/docs") {
+    if (u.pathname !== "/index4ai/v1/docs") {
       res.statusCode = 404;
       res.end("{}");
       return;
@@ -391,6 +431,10 @@ async function docsListPagingTests(client: MCPClient, docsRequests: Map<string, 
 interface IngestCapture {
   remoteURL?: string;
   labels?: string;
+  // X-Attributes / X-Attribute-Schema of every /index4ai/v1/ingest request, in order.
+  attrHeaders: { attributes?: string; schema?: string }[];
+  // Last /index4ai/v1/attributes request: method, Authorization, X-Project-ID.
+  attributes?: { method?: string; auth?: string; projectID?: string };
 }
 
 function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; close: () => Promise<void> }> {
@@ -404,8 +448,8 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
     orga_id: "",
     is_default: true,
   };
-  // Records the headers the last /v3/grill/ingest request carried, for assertions.
-  const ingest: IngestCapture = {};
+  // Records the headers the last /index4ai/v1/ingest request carried, for assertions.
+  const ingest: IngestCapture = { attrHeaders: [] };
   const server: Server = createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://localhost");
     res.setHeader("content-type", "application/json");
@@ -413,7 +457,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
 
     // Projects listing — used by scope resolution and grill_projects. The
     // gateway refuses project keys here (403) and answers /projects/info instead.
-    if (u.pathname === "/v3/projects") {
+    if (u.pathname === "/index4ai/v1/projects") {
       if (scenario.startsWith("poma_proj_")) {
         res.statusCode = 403;
         res.end('{"code":403,"reason":"forbidden","error":"project API keys are not accepted on this endpoint"}');
@@ -422,7 +466,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       res.end(JSON.stringify([defaultProject]));
       return;
     }
-    if (u.pathname === "/v3/projects/info") {
+    if (u.pathname === "/index4ai/v1/projects/info") {
       if (!scenario.startsWith("poma_proj_")) {
         res.statusCode = 401;
         res.end('{"error":"A project API key is required"}');
@@ -431,10 +475,14 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       res.end(JSON.stringify({ ...defaultProject, id: "242d", project_id: "242d", name: "immoscout", is_default: false }));
       return;
     }
-    // Ingest — capture X-Remote-URL / X-Labels and return a job_id.
-    if (u.pathname === "/v3/grill/ingest") {
+    // Ingest — capture X-Remote-URL / X-Labels (must stay absent) and return a job_id.
+    if (u.pathname === "/index4ai/v1/ingest") {
       ingest.remoteURL = (req.headers["x-remote-url"] as string | undefined) ?? undefined;
       ingest.labels = (req.headers["x-labels"] as string | undefined) ?? undefined;
+      ingest.attrHeaders.push({
+        attributes: req.headers["x-attributes"] as string | undefined,
+        schema: req.headers["x-attribute-schema"] as string | undefined,
+      });
       if (scenario === "poma_proj_conflict") {
         res.statusCode = 409;
         res.end('{"code":409,"reason":"project_id_conflict","error":"X-Project-ID does not match the project this API key is bound to"}');
@@ -445,7 +493,7 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       return;
     }
     // Job status snapshot — scenario selected by token.
-    if (/^\/v3\/jobs\/.+\/status$/.test(u.pathname)) {
+    if (/^\/index4ai\/v1\/jobs\/.+\/status$/.test(u.pathname)) {
       if (scenario === "js404") {
         res.statusCode = 404;
         res.end('{"error":"job not found"}');
@@ -487,8 +535,32 @@ function startErrorStubAPI(): Promise<{ url: string; ingest: IngestCapture; clos
       res.end();
       return;
     }
+    // Attributes — capture method/auth/project header; "attrs503" = unreadable schema.
+    if (u.pathname === "/index4ai/v1/attributes") {
+      ingest.attributes = {
+        method: req.method,
+        auth: req.headers.authorization,
+        projectID: (req.headers["x-project-id"] as string | undefined) ?? undefined,
+      };
+      if (scenario === "attrs503") {
+        res.statusCode = 503;
+        res.end('{"error":"attribute schema unavailable"}');
+        return;
+      }
+      res.end(
+        JSON.stringify({
+          attributes: [
+            { name: "region", type: "string" },
+            { name: "notes", type: "encrypted_text" },
+          ],
+          max_names: 64,
+          note: "Reuse an existing attribute name and type where one fits; a name, once declared, is permanent and counts against max_names.",
+        }),
+      );
+      return;
+    }
     // Search.
-    if (u.pathname === "/v3/grill/search" || u.pathname === "/v3/grill/searchInDoc") {
+    if (u.pathname === "/index4ai/v1/search" || u.pathname === "/index4ai/v1/searchInDoc") {
       res.end('{"context":"some context","assets":null}');
       return;
     }
@@ -515,6 +587,9 @@ interface EnvelopeContent {
   scope?: { project_name?: string; hint?: string; is_default?: boolean; source?: string };
   projects?: string;
   documents?: unknown[];
+  attributes?: { name?: string; type?: string }[];
+  max_names?: number;
+  note?: string;
   results?: { code?: string; retryable?: boolean; error?: string; grill?: unknown }[];
   submitted_count?: number;
   job_id?: string;
@@ -599,16 +674,90 @@ async function errorCodeTests(
       content.scope?.project_name === "Default Workspace";
     record("url ingest sends X-Remote-URL + returns job_id", ok, ok ? undefined : `job_id=${content.job_id} remoteURL=${ingest.remoteURL}`);
   }
-  // 9. Labels serialize to a sorted X-Labels header.
+  // 9. Legacy labels become a sorted attributes.labels array; no X-Labels (D157).
   {
     ingest.labels = undefined;
+    ingest.attrHeaders.length = 0;
     const { isError } = await callTool(stubClient, "grill_ingest", {
       token: "scope1",
       url: "https://example.com/doc.pdf",
-      labels: { b: "2", a: "1" },
+      labels: { b: "2", a: "1", " ": "skip" },
     });
-    const ok = !isError && ingest.labels === "a:1,b:2";
-    record("labels serialize to sorted X-Labels", ok, ok ? undefined : `X-Labels=${ingest.labels}`);
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && ingest.labels === undefined && h?.attributes === '{"labels":["a:1","b:2"]}' && h?.schema === undefined;
+    record("labels → sorted attributes.labels, no X-Labels", ok, ok ? undefined : `X-Labels=${ingest.labels} ${JSON.stringify(h)}`);
+  }
+  // 9b. Legacy labels merge after an explicit attributes.labels, de-duplicated
+  //     (grill_ingest_sync shares the path).
+  {
+    ingest.labels = undefined;
+    ingest.attrHeaders.length = 0;
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      labels: { team: "eng", a: "1" },
+      attributes: { labels: ["z:9", "team:eng"], year: 2024 },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && ingest.labels === undefined && h?.attributes === '{"labels":["z:9","team:eng","a:1"],"year":2024}';
+    record("labels merge into attributes.labels (explicit first, deduped)", ok, ok ? undefined : `X-Labels=${ingest.labels} ${JSON.stringify(h)} ${JSON.stringify(content)}`);
+  }
+  // 9c. attributes.labels that is not an array of strings cannot take the
+  //     legacy labels: invalid_input, never a silent drop; an already-invalid
+  //     value keeps its usual error; nothing is sent.
+  {
+    const cases: [unknown, string][] = [
+      ["team:eng", "must be an array of strings"],
+      [[1, 2], "must be an array of strings"],
+      [null, "null is not accepted"],
+      [[null], "null is not accepted"],
+      [["x", null], "null is not accepted"],
+    ];
+    for (const [labelsAttr, want] of cases) {
+      ingest.attrHeaders.length = 0;
+      const { isError, content } = await callTool(stubClient, "grill_ingest", {
+        token: "scope1",
+        url: "https://example.com/doc.pdf",
+        labels: { team: "eng" },
+        attributes: { labels: labelsAttr },
+      });
+      const ok = isError && content.code === "invalid_input" && (content.error ?? "").includes(want) && ingest.attrHeaders.length === 0;
+      record(`labels + attributes.labels=${JSON.stringify(labelsAttr)} → invalid_input`, ok, ok ? undefined : JSON.stringify(content));
+    }
+  }
+  // 9d. Attribute-rule errors with translated labels in play name the legacy
+  //     argument (element cap, size cap, schema type conflict).
+  {
+    const many: Record<string, string> = {};
+    for (let i = 0; i < 65; i++) many[`k${String(i).padStart(2, "0")}`] = "v";
+    const cases: [string, Record<string, unknown>, string, number][] = [
+      ["element cap", { labels: many }, "exceeds the cap of 64", 65],
+      ["size cap", { labels: { k: "v".repeat(2100) } }, "capped at 2048", 1],
+      ["schema type conflict", { labels: { team: "eng" }, attribute_schema: { labels: { type: "string" } } }, 'declared "string"', 1],
+      ["merge conflict", { labels: { team: "eng", a: "1" }, attributes: { labels: "x" } }, "must be an array of strings", 2],
+    ];
+    for (const [name, args, want, n] of cases) {
+      ingest.attrHeaders.length = 0;
+      const { isError, content } = await callTool(stubClient, "grill_ingest", { token: "scope1", url: "https://example.com/doc.pdf", ...args });
+      const err = content.error ?? "";
+      const ok =
+        isError && content.code === "invalid_input" && err.includes(want) &&
+        err.endsWith(`(includes ${n} entries translated from the legacy \`labels\` argument)`) && ingest.attrHeaders.length === 0;
+      record(`legacy labels hint: ${name}`, ok, ok ? undefined : JSON.stringify(content));
+    }
+  }
+  // 9e. Label keys sort by code point (Go's byte order), not UTF-16 units:
+  //     U+FF61 sorts before U+1F600, though its UTF-16 unit is higher.
+  {
+    ingest.attrHeaders.length = 0;
+    const { isError } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      labels: { "\u{1F600}": "1", "\uFF61": "2" },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && h?.attributes === '{"labels":["\\uff61:2","\\ud83d\\ude00:1"]}';
+    record("label keys sort by code point (matches Go)", ok, ok ? undefined : JSON.stringify(h));
   }
   // 10. url + file_path → invalid_input (mutual exclusivity).
   {
@@ -652,6 +801,279 @@ async function errorCodeTests(
     const { isError, content } = await callTool(noTokenClient, "grill_docs_list", {});
     const ok = isError && content.code === "missing_token" && Array.isArray(content.documents) && content.documents.length === 0;
     record("docs_list error output has documents: []", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 13b. grill_attributes: GET /attributes with Bearer + X-Project-ID,
+  //      renders names/types, max_names, note and scope.
+  {
+    ingest.attributes = undefined;
+    const { isError, content } = await callTool(stubClient, "grill_attributes", { token: "scope1", project_id: "p1" });
+    // Cast: TS narrowed the field to undefined after the reset above, but the stub mutates it.
+    const a = ingest.attributes as IngestCapture["attributes"];
+    const ok =
+      !isError &&
+      a?.method === "GET" &&
+      a?.auth === "Bearer scope1" &&
+      a?.projectID === "p1" &&
+      JSON.stringify(content.attributes) ===
+        JSON.stringify([
+          { name: "region", type: "string" },
+          { name: "notes", type: "encrypted_text" },
+        ]) &&
+      content.max_names === 64 &&
+      (content.note ?? "").includes("permanent") &&
+      content.scope?.project_name === "Default Workspace" &&
+      content.error === undefined;
+    record("grill_attributes request + rendering", ok, ok ? undefined : `${JSON.stringify(a)} ${JSON.stringify(content)}`);
+  }
+  // 13c. grill_attributes 503 (unreadable schema) → retryable upstream_error, attributes: [].
+  {
+    const { isError, content } = await callTool(stubClient, "grill_attributes", { token: "attrs503" });
+    const ok =
+      isError &&
+      content.code === "upstream_error" &&
+      content.retryable === true &&
+      (content.error ?? "").includes("HTTP 503") &&
+      Array.isArray(content.attributes) &&
+      content.attributes.length === 0 &&
+      (ingest.attributes as IngestCapture["attributes"])?.projectID === undefined;
+    record("grill_attributes 503 → retryable upstream_error", ok, ok ? undefined : JSON.stringify(content));
+  }
+  // 13d. Typed attributes on ingest → X-Attributes / X-Attribute-Schema, keys
+  //      sorted, compact, non-ASCII escaped; legacy labels ride along as
+  //      attributes.labels, never X-Labels.
+  {
+    ingest.attrHeaders.length = 0;
+    ingest.labels = undefined;
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      labels: { team: "eng" },
+      attributes: { year: 2024, region: "emea", city: "Z\u00fcrich", tags: ["a", "b"], notes: "private", ["__proto__"]: "p" },
+      attribute_schema: { notes: { type: "encrypted_text" } },
+    });
+    const h = ingest.attrHeaders[0];
+    // __proto__ is a legal name (it matches the regex) and must be sent, not
+    // swallowed as a prototype assignment. The literal key in a JSON-RPC
+    // payload arrives as an own property after JSON.parse.
+    const wantAttrs = '{"__proto__":"p","city":"Z\\u00fcrich","labels":["team:eng"],"notes":"private","region":"emea","tags":["a","b"],"year":2024}';
+    const ok =
+      !isError &&
+      ingest.attrHeaders.length === 1 &&
+      h?.attributes === wantAttrs &&
+      h?.schema === '{"notes":{"type":"encrypted_text"}}' &&
+      ingest.labels === undefined;
+    record("ingest attributes → X-Attributes/X-Attribute-Schema + labels as attribute", ok, ok ? undefined : `${JSON.stringify(h)} labels=${ingest.labels} ${JSON.stringify(content)}`);
+  }
+  // 13d2. __proto__ survives in attribute_schema too (null-prototype object there as well).
+  {
+    ingest.attrHeaders.length = 0;
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      attributes: { ["__proto__"]: "p" },
+      attribute_schema: { ["__proto__"]: { type: "encrypted_text" } },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok = !isError && h?.attributes === '{"__proto__":"p"}' && h?.schema === '{"__proto__":{"type":"encrypted_text"}}';
+    record("__proto__ sent in attributes and attribute_schema", ok, ok ? undefined : `${JSON.stringify(h)} ${JSON.stringify(content)}`);
+  }
+  // 13d3. A declared empty array is legal (the only way to store []) and is
+  //       sent with both headers; float declared over int elements is legal too.
+  {
+    ingest.attrHeaders.length = 0;
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      attributes: { tags: [], w: [1, 2.5] },
+      attribute_schema: { tags: { type: "[]string" }, w: { type: "[]float" } },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok =
+      !isError &&
+      h?.attributes === '{"tags":[],"w":[1,2.5]}' &&
+      h?.schema === '{"tags":{"type":"[]string"},"w":{"type":"[]float"}}';
+    record("declared empty array + []float over ints accepted", ok, ok ? undefined : `${JSON.stringify(h)} ${JSON.stringify(content)}`);
+  }
+  // 13d4. Non-finite number (1e400 → Infinity after JSON.parse) is refused.
+  {
+    ingest.attrHeaders.length = 0;
+    const resp = await stubClient.requestRaw(
+      "tools/call",
+      '{"name":"grill_ingest","arguments":{"token":"scope1","url":"https://example.com/doc.pdf","attributes":{"x":1e400}}}',
+    );
+    const result = resp.result as { isError?: boolean; structuredContent?: EnvelopeContent } | undefined;
+    const c = result?.structuredContent ?? {};
+    const ok = result?.isError === true && c.code === "invalid_input" && (c.error ?? "").includes("is not a finite number") && ingest.attrHeaders.length === 0;
+    record("ingest attributes invalid: non-finite 1e400", ok, ok ? undefined : JSON.stringify(c));
+  }
+  // 13d5. Accepted: float intent kept by declaring []float; RFC3339 variants and plain dates.
+  {
+    ingest.attrHeaders.length = 0;
+    const dates = ["2024-05-01", "2024-05-01T12:00:00Z", "2024-05-01T12:00:00.123456Z", "2024-05-01T12:00:00+05:30", "2024-05-01T12:00:00.5-08:00"];
+    const { isError, content } = await callTool(stubClient, "grill_ingest", {
+      token: "scope1",
+      url: "https://example.com/doc.pdf",
+      attributes: { w: [1.0, 2.5], d: dates },
+      attribute_schema: { w: { type: "[]float" }, d: { type: "[]datetime" } },
+    });
+    const h = ingest.attrHeaders[0];
+    const ok =
+      !isError &&
+      h?.attributes === JSON.stringify({ d: dates, w: [1, 2.5] }) &&
+      h?.schema === '{"d":{"type":"[]datetime"},"w":{"type":"[]float"}}';
+    record("declared []float over 1.0 and RFC3339/plain-date []datetime accepted", ok, ok ? undefined : `${JSON.stringify(h)} ${JSON.stringify(content)}`);
+  }
+  // 13e. No attributes → neither header is sent.
+  {
+    ingest.attrHeaders.length = 0;
+    await callTool(stubClient, "grill_ingest", { token: "scope1", url: "https://example.com/doc.pdf" });
+    const h = ingest.attrHeaders[0];
+    const ok = h !== undefined && h.attributes === undefined && h.schema === undefined;
+    record("ingest without attributes sends no attribute headers", ok, ok ? undefined : JSON.stringify(h));
+  }
+  // 13f. Validation → invalid_input, and nothing reaches the API.
+  {
+    const cases: { name: string; tool: string; args: Record<string, unknown>; want: string }[] = [
+      { name: "uppercase name", tool: "grill_ingest", args: { attributes: { DocYear: 2024 } }, want: 'attribute name "DocYear" must match' },
+      { name: "top-level null", tool: "grill_ingest", args: { attributes: { gone: null } }, want: 'attribute "gone": value must be' },
+      { name: "object value", tool: "grill_ingest_sync", args: { attributes: { x: { a: 1 } } }, want: 'attribute "x": value must be' },
+      { name: "over cap", tool: "grill_ingest", args: { attributes: { x: "y".repeat(2048) } }, want: "capped at 2048" },
+      // 400 × ü is 400 characters of input but 2400 once escaped: the cap counts the header.
+      { name: "cap counts escaped length", tool: "grill_ingest", args: { attributes: { x: "\u00fc".repeat(400) } }, want: "capped at 2048" },
+      { name: "too many names", tool: "grill_ingest", args: { attributes: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`a${i}`, 1])) }, want: "at most 64" },
+      { name: "schema bad name", tool: "grill_ingest", args: { attribute_schema: { Notes: { type: "encrypted_text" } } }, want: 'attribute_schema name "Notes"' },
+      {
+        name: "orphan declaration",
+        tool: "grill_ingest",
+        args: { attributes: { region: "emea" }, attribute_schema: { notes: { type: "encrypted_text" } } },
+        want: 'attribute_schema declares "notes", but attributes has no value for it',
+      },
+      {
+        name: "schema without attributes",
+        tool: "grill_ingest_sync",
+        args: { attribute_schema: { notes: { type: "encrypted_text" } } },
+        want: 'attribute_schema declares "notes", but attributes has no value for it',
+      },
+      {
+        name: "__proto__ orphan declaration",
+        tool: "grill_ingest",
+        args: { attributes: { region: "emea" }, attribute_schema: { ["__proto__"]: { type: "encrypted_text" } } },
+        want: 'attribute_schema declares "__proto__"',
+      },
+      { name: "mixed string and int", tool: "grill_ingest", args: { attributes: { x: ["a", 1] } }, want: 'attribute "x": mixed element types in array [int string]' },
+      { name: "mixed int and float", tool: "grill_ingest", args: { attributes: { x: [1, 2.5] } }, want: 'attribute "x": mixed element types in array [float int]' },
+      { name: "mixed bool and string", tool: "grill_ingest", args: { attributes: { x: [true, "a"] } }, want: "mixed element types" },
+      { name: "undeclared empty array", tool: "grill_ingest", args: { attributes: { x: [] } }, want: 'attribute "x": an empty array has no type to infer; declare it in attribute_schema' },
+      {
+        name: "undeclared empty array (batch)",
+        tool: "grill_ingest_batch",
+        args: { file_paths: ["/nonexistent/never-read.txt"], attributes: { x: [] } },
+        want: "an empty array has no type to infer",
+      },
+      {
+        name: "empty array declared scalar",
+        tool: "grill_ingest",
+        args: { attributes: { x: [] }, attribute_schema: { x: { type: "string" } } },
+        want: 'attribute "x" is declared "string", which needs a scalar',
+      },
+      {
+        name: "declared []int with string",
+        tool: "grill_ingest",
+        args: { attributes: { x: [1, "a"] }, attribute_schema: { x: { type: "[]int" } } },
+        want: 'attribute "x": element "a" is not a int',
+      },
+      { name: "int beyond 2^53", tool: "grill_ingest", args: { attributes: { x: 2 ** 54 } }, want: "outside the JSON-safe integer range" },
+      { name: "array over 64 elements", tool: "grill_ingest", args: { attributes: { x: Array(65).fill(1) } }, want: "65 elements exceeds the cap of 64" },
+      // 1.0 is 1 on the wire (and after the gateway's float64 round trip): an int.
+      { name: "integral float is an int", tool: "grill_ingest", args: { attributes: { x: [1.0, 2.5] } }, want: 'attribute "x": mixed element types in array [float int]' },
+      {
+        name: "unknown declared type",
+        tool: "grill_ingest",
+        args: { attributes: { x: "a" }, attribute_schema: { x: { type: "text" } } },
+        want: 'attribute_schema "x": unknown type "text"; known: []bool, []datetime, []encrypted_text, []float, []int, []string, bool, datetime, encrypted_text, float, int, string',
+      },
+      {
+        name: "datetime garbage",
+        tool: "grill_ingest",
+        args: { attributes: { d: "not-a-date" }, attribute_schema: { d: { type: "datetime" } } },
+        want: 'attribute "d": "not-a-date" is not a valid datetime; use RFC3339 (2024-05-01T12:00:00Z) or YYYY-MM-DD',
+      },
+      {
+        name: "datetime impossible day",
+        tool: "grill_ingest",
+        args: { attributes: { d: "2024-02-30" }, attribute_schema: { d: { type: "datetime" } } },
+        want: "is not a valid datetime; use RFC3339",
+      },
+      {
+        name: "datetime missing timezone",
+        tool: "grill_ingest",
+        args: { attributes: { d: "2024-05-01T12:00:00" }, attribute_schema: { d: { type: "datetime" } } },
+        want: "is not a valid datetime; use RFC3339",
+      },
+      {
+        name: "datetime hour 24",
+        tool: "grill_ingest",
+        args: { attributes: { d: "2024-05-01T24:00:00Z" }, attribute_schema: { d: { type: "datetime" } } },
+        want: "is not a valid datetime; use RFC3339",
+      },
+      {
+        name: "[]datetime with one bad",
+        tool: "grill_ingest",
+        args: { attributes: { d: ["2024-01-02", "2024-1-2"] }, attribute_schema: { d: { type: "[]datetime" } } },
+        want: '"2024-1-2" is not a valid datetime',
+      },
+      { name: "schema missing type", tool: "grill_ingest", args: { attribute_schema: { notes: {} } }, want: 'attribute_schema "notes" must be an object' },
+    ];
+    for (const c of cases) {
+      ingest.attrHeaders.length = 0;
+      const { isError, content } = await callTool(stubClient, c.tool, { token: "scope1", url: "https://example.com/doc.pdf", ...c.args });
+      const ok = isError && content.code === "invalid_input" && (content.error ?? "").includes(c.want) && ingest.attrHeaders.length === 0;
+      record(`ingest attributes invalid: ${c.name}`, ok, ok ? undefined : `requests=${ingest.attrHeaders.length} ${JSON.stringify(content)}`);
+    }
+    // Exactly 2048 characters is accepted (the cap is inclusive).
+    ingest.attrHeaders.length = 0;
+    const exact = { x: "y".repeat(2048 - '{"x":""}'.length) };
+    const { isError } = await callTool(stubClient, "grill_ingest", { token: "scope1", url: "https://example.com/doc.pdf", attributes: exact });
+    const ok = !isError && ingest.attrHeaders[0]?.attributes?.length === 2048;
+    record("ingest attributes at exactly 2048 accepted", ok, ok ? undefined : String(ingest.attrHeaders[0]?.attributes?.length));
+  }
+  // 13g. Batch: attributes go on EVERY file; invalid attributes upload nothing.
+  {
+    const dir = mkdtempSync(join(tmpdir(), "grill-smoke-"));
+    const files = ["a.txt", "b.txt", "c.txt"].map((n) => {
+      const p = join(dir, n);
+      writeFileSync(p, `hello ${n}`);
+      return p;
+    });
+    try {
+      ingest.attrHeaders.length = 0;
+      const { isError, content } = await callTool(stubClient, "grill_ingest_batch", {
+        token: "scope1",
+        file_paths: files,
+        attributes: { batch: "q3", notes: "private", year: 2024 },
+        attribute_schema: { notes: { type: "encrypted_text" } },
+      });
+      let ok =
+        !isError &&
+        content.submitted_count === 3 &&
+        ingest.attrHeaders.length === 3 &&
+        ingest.attrHeaders.every(
+          (h) => h.attributes === '{"batch":"q3","notes":"private","year":2024}' && h.schema === '{"notes":{"type":"encrypted_text"}}',
+        );
+      record("batch attaches attributes to every file", ok, ok ? undefined : `${JSON.stringify(ingest.attrHeaders)} ${JSON.stringify(content)}`);
+
+      ingest.attrHeaders.length = 0;
+      const bad = await callTool(stubClient, "grill_ingest_batch", { token: "scope1", file_paths: files, attributes: { "doc-year": 2024 } });
+      ok =
+        bad.isError &&
+        bad.content.code === "invalid_input" &&
+        ingest.attrHeaders.length === 0 &&
+        Array.isArray(bad.content.results) &&
+        bad.content.results.length === 0;
+      record("batch invalid attributes → invalid_input, nothing uploaded", ok, ok ? undefined : `requests=${ingest.attrHeaders.length} ${JSON.stringify(bad.content)}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
   // 14. jobs_status surfaces the gateway grill object per result, normalized to
   //     the exact shape the Go implementation emits (see
@@ -733,9 +1155,9 @@ async function httpModeTests(): Promise<void> {
       s.close(() => res(port));
     });
   });
-  const { POMA_API_KEY: _acc, GRILL_INGEST_ALLOWED_PREFIX: _pre, ...base } = process.env;
+  const { GRILL_INGEST_ALLOWED_PREFIX: _pre, ...base } = childEnv({ POMA_API_KEY: "smoke-fake-key" });
   const proc = spawn(process.execPath, [BINARY, "-http", `127.0.0.1:${port}`], {
-    env: { ...base, POMA_API_KEY: "smoke-fake-key" },
+    env: base,
     stdio: ["ignore", "ignore", "pipe"],
   });
   await new Promise<void>((res, rej) => {
@@ -782,6 +1204,16 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
+  const deadAPI = createServer((req, res) => {
+    deadAPIHits.push(`${req.method} ${req.url}`);
+    res.statusCode = 418;
+    res.setHeader("content-type", "application/json");
+    res.end('{"error":"smoke test reached the default API host; pass POMA_API_BASE_URL to a stub"}');
+  });
+  deadAPIURL = await new Promise<string>((res) => {
+    deadAPI.listen(0, "127.0.0.1", () => res(`http://127.0.0.1:${(deadAPI.address() as AddressInfo).port}`));
+  });
+
   // Validation handlers all check token presence first; supply a placeholder
   // so the validation messages we're asserting on actually surface.
   const client = new MCPClient({ POMA_API_KEY: "smoke-fake-key" });
@@ -824,6 +1256,13 @@ async function main(): Promise<void> {
   }
 
   await httpModeTests();
+
+  await new Promise<void>((res) => deadAPI.close(() => res()));
+  record(
+    "no request reached the default API host",
+    deadAPIHits.length === 0,
+    deadAPIHits.length === 0 ? undefined : deadAPIHits.join(", "),
+  );
 
   const passed = results.filter((r) => r.ok).length;
   const failed = results.length - passed;

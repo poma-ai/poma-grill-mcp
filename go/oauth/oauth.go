@@ -60,7 +60,7 @@ func Register(mux *http.ServeMux, addr string) {
 
 	slog.Info("oauth: protected-resource metadata registered",
 		"well_known", "/.well-known/oauth-protected-resource",
-		"authorization_server", apiBaseURL(),
+		"authorization_server", authServerURL(),
 	)
 }
 

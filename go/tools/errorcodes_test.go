@@ -31,6 +31,7 @@ func TestGrillErrorEmbeddingPromotesFields(t *testing.T) {
 		{"job_status_result", GrillJobStatusResult{JobID: "j1", GrillError: ge}},
 		{"jobs_status", GrillJobsStatusOutput{GrillError: ge}},
 		{"projects", GrillProjectsOutput{GrillError: ge}},
+		{"attributes", GrillAttributesOutput{GrillError: ge}},
 	}
 
 	for _, tc := range cases {

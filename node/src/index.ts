@@ -44,8 +44,8 @@ function printUsage(): void {
       "  -http <addr>       HTTP mode (e.g. :8080)",
       "",
       "Env: POMA_API_KEY (required unless passed per-call as 'token')",
-      "     POMA_API_BASE_URL (override https://api.poma-ai.com)",
-      "     POMA_STATUS_API_BASE_URL (override https://api.poma-ai.com/status/v1)",
+      "     POMA_API_BASE_URL (override https://api.index4.ai)",
+      "     POMA_STATUS_API_BASE_URL (override https://api.index4.ai/status/v1)",
       "",
     ].join("\n"),
   );

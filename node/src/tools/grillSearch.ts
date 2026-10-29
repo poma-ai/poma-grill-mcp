@@ -62,7 +62,7 @@ export async function grillSearch(
   const projectID = getProjectID(args.project_id);
   const client = new GrillClient(token, projectID);
   const docFilter = typeof args.doc_filter === "string" && args.doc_filter !== "" ? args.doc_filter : "";
-  const path = docFilter !== "" ? "/grill/searchInDoc" : "/grill/search";
+  const path = docFilter !== "" ? "/searchInDoc" : "/search";
   const body = buildBody(args, docFilter !== "");
 
   let res;

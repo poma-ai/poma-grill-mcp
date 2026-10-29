@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -40,30 +41,32 @@ func publicBaseURL() string {
 	return "http://localhost" + port
 }
 
-// apiBaseURL returns the authorization server's (api's) base URL.
-// Uses POMA_API_BASE_URL, stripping any version suffix (e.g. "/v3").
-// Falls back to https://api.poma-ai.com for safety.
-func apiBaseURL() string {
-	v := os.Getenv("POMA_API_BASE_URL")
-	if v == "" {
+// authServerURL is the OAuth authorization server advertised to MCP clients.
+//
+// The api answers OAuth discovery on the index4ai hosts too, but the document names the
+// poma-ai.com host of the same environment as issuer (api.index4.ai -> api.poma-ai.com,
+// api-dev.index4.ai -> api-dev.poma-ai.com), and RFC 8414 clients reject metadata whose
+// issuer differs from the URL they fetched. So the MCP must advertise the poma-ai.com host
+// even though its API calls go to api(-dev).index4.ai.
+//
+// Priority: POMA_AUTH_SERVER_URL; else the origin of POMA_API_BASE_URL with a .index4.ai
+// host mapped to the matching .poma-ai.com host; else https://api.poma-ai.com. Deriving
+// from the API host keeps a dev deployment on the dev issuer: a fixed prod default would
+// send dev users to the prod login and mint tokens the dev pod's JWT secret rejects.
+// Mirrors index4ai-mcp oauth/discovery.go.
+func authServerURL() string {
+	if v := strings.TrimRight(strings.TrimSpace(os.Getenv("POMA_AUTH_SERVER_URL")), "/"); v != "" {
+		return v
+	}
+	u, err := url.Parse(strings.TrimSpace(os.Getenv("POMA_API_BASE_URL")))
+	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "https://api.poma-ai.com"
 	}
-	v = strings.TrimRight(v, "/")
-	// Strip /v<N> suffix if present (e.g. "https://api.poma-ai.com/v3" → "https://api.poma-ai.com").
-	if idx := strings.LastIndex(v, "/v"); idx > 0 {
-		rest := v[idx+1:] // "v3" or "v3/something"
-		isVer := len(rest) > 1
-		for _, c := range rest[1:] {
-			if c < '0' || c > '9' {
-				isVer = false
-				break
-			}
-		}
-		if isVer {
-			v = v[:idx]
-		}
+	host := u.Host
+	if h, ok := strings.CutSuffix(host, ".index4.ai"); ok {
+		host = h + ".poma-ai.com"
 	}
-	return v
+	return u.Scheme + "://" + host
 }
 
 // handleProtectedResourceMeta serves GET /.well-known/oauth-protected-resource.
@@ -74,7 +77,7 @@ func handleProtectedResourceMeta(w http.ResponseWriter, r *http.Request) {
 
 	meta := protectedResourceMeta{
 		Resource:               publicBaseURL(),
-		AuthorizationServers:   []string{apiBaseURL()},
+		AuthorizationServers:   []string{authServerURL()},
 		BearerMethodsSupported: []string{"header"},
 		ScopesSupported:        []string{"mcp.tools.read", "mcp.tools.write"},
 	}

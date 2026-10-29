@@ -156,6 +156,7 @@ Ingest ~/docs/spec.pdf into POMA Grill, then search it for authentication requir
 | `grill_ingest_batch` | Upload up to 50 files with controlled concurrency (default 5, max 10). Returns `job_ids` immediately after uploads complete; use `grill_jobs_status` to monitor. |
 | `grill_jobs_status` | Get current status snapshots for up to 50 jobs in one call. No streaming. |
 | `grill_search` | Hybrid search returning concatenated context text for RAG. Set `doc_filter` (= `job_id`, or `grill.doc_id` on a dedup hit) to restrict to one document. |
+| `grill_attributes` | Typed attribute names already declared in the project, with their types and `max_names`. Call before passing `attributes` to an ingest tool (reuse an existing name and type; names are permanent) and before building `grill_search` `attribute_filters`. |
 
 ### `grill_ingest` / `grill_ingest_sync` arguments
 
@@ -167,7 +168,9 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 | `file_base64` | string | one-of | Standard base64 of the file bytes; fine for small files. |
 | `url` | string | one-of | Remote URL the **POMA Grill server** fetches and ingests. The MCP itself does not download it. |
 | `filename` | string | no | Original basename (e.g. `report.pdf`). With `file_path`, defaults to the path basename; otherwise inferred from bytes when possible. |
-| `labels` | object | no | Optional `{key: value}` labels attached to the document (sent as the `X-Labels` header). Avoid `:` and `,` in keys/values. |
+| `labels` | object | no | **Legacy — being retired in favour of `attributes`; prefer attributes for new work.** Optional `{key: value}` labels attached to the document. Sent as the `labels` attribute: each pair becomes a `"key:value"` string in `attributes.labels` (sorted by key, after any `labels` you pass in `attributes`, duplicates dropped); no `X-Labels` header. Grill types `labels` as `[]encrypted_text` (token-matched) unless the project already owns `labels` with another type, which then governs (an incompatible one fails at grill). Labels share the attribute limits: 64 elements, 64 names, 2048 characters of `X-Attributes`. Avoid `:` in keys. |
+| `attributes` | object | no | Typed document attributes, `{name: value}`; a value is a string, number, boolean, or an array of those — `null` is refused. An array must be non-empty and of one kind (all strings, ints, floats or booleans; `1` and `2.5` do not mix, and a whole number like `1.0` counts as an int — declare `float` / `[]float` to keep a float type); an empty array needs its array type (e.g. `[]string`) declared in `attribute_schema`. Call `grill_attributes` first and reuse an existing name and type where one fits. Names must match `^[a-z0-9_]{1,64}$`, are permanent per project and count against `max_names`. Sent as the `X-Attributes` header: at most 64 names and 2048 characters of compact JSON — larger input is refused with `invalid_input`, never truncated. |
+| `attribute_schema` | object | no | Type declarations, `{name: {"type": "<POMA type>"}}` with a type from `string`, `int`, `float`, `bool`, `datetime`, `encrypted_text` and their `[]` array forms, only for names present in `attributes`, and only where the value cannot say the type: `encrypted_text` must **always** be declared (undeclared, a new name is stored as a plain string), and `datetime` for a new name (values in RFC3339 with a timezone, e.g. `2024-05-01T12:00:00Z`, or `YYYY-MM-DD`). Sent as `X-Attribute-Schema`, same 2048-character cap. |
 | `token` | string | no | API key — omit if `POMA_API_KEY` is set on the server process |
 
 **`file_path` notes**
@@ -180,7 +183,7 @@ Provide **exactly one** of `file_path`, `file_base64`, or `url`.
 
 **Very large files without MCP**
 
-You can POST the raw file directly to the POMA API (same shape as the server: `POST` … `/grill/ingest` with octet-stream body and `Content-Disposition: attachment; filename="…"`), obtain `job_id`, then use `grill_search` with `doc_filter` set to that id. This bypasses MCP message limits entirely.
+You can POST the raw file directly to the POMA API (same shape as the server: `POST https://api.index4.ai/index4ai/v1/ingest` with octet-stream body and `Content-Disposition: attachment; filename="…"`), obtain `job_id`, then use `grill_search` with `doc_filter` set to that id. This bypasses MCP message limits entirely.
 
 ### `grill_search` arguments
 
@@ -201,6 +204,8 @@ Result count is bounded server-side by relevance and a token budget — there is
 |----------|------|----------|-------------|
 | `file_paths` | array of string | yes | Up to 50 paths readable by the MCP server process. |
 | `concurrency` | integer | no | Upload concurrency (default 5, max 10). Use `1` on free-tier accounts. |
+| `attributes` | object | no | Same as on `grill_ingest`; attached to **every** file in the batch. Validated once before any upload — an invalid set fails the whole batch with `invalid_input` and uploads nothing. |
+| `attribute_schema` | object | no | Same as on `grill_ingest`; applies to every file. |
 | `token` | string | no | API key |
 
 Returns `{results, submitted_count, failed_count, quota_exceeded_count}`. `quota_exceeded` entries (HTTP 403 from the queue) are retryable once running jobs finish.
@@ -276,8 +281,10 @@ When `POMA_API_JWT_SECRET` is set, the MCP verifies incoming Bearer JWTs locally
 |----------|----------|-------------|
 | `POMA_API_JWT_SECRET` | OAuth deployments | Signing key for JWT verification. Must match the api's secret. If set, `POMA_MCP_RESOURCE` must also be set. |
 | `POMA_MCP_RESOURCE` | OAuth deployments | The MCP's own public URI (e.g. `https://mcp.grill.poma-ai.com/`). Used for `aud` validation and advertised in the protected-resource metadata. |
-| `POMA_API_BASE_URL` | Recommended | The api's base URL (e.g. `https://api.poma-ai.com`). Advertised in protected-resource metadata as the authorization server. Defaults to `https://api.poma-ai.com`. |
+| `POMA_API_BASE_URL` | Recommended | The API host (e.g. `https://api.index4.ai`); only its origin is used, and requests go to `<origin>/index4ai/v1`. Defaults to `https://api.index4.ai`. |
+| `POMA_AUTH_SERVER_URL` | Optional | The OAuth authorization server advertised in protected-resource metadata. Defaults to the `POMA_API_BASE_URL` origin with `.index4.ai` mapped to `.poma-ai.com` (the api's issuer is `api(-dev).poma-ai.com` on both hosts), else `https://api.poma-ai.com`. |
 | `POMA_MCP_PUBLIC_URL` | Recommended | The MCP's own public base URL. Used for the `resource` field in protected-resource metadata and the `WWW-Authenticate` challenge. Falls back to `http://localhost:<port>`. **Required behind a reverse proxy** — `X-Forwarded-Proto`/`X-Forwarded-Host` headers are not trusted (to prevent header-injection attacks). |
+| `POMA_CONSOLE_URL` | Other brands | The web console that tool messages send users to for API keys, usage and project settings. Defaults to `https://console.poma-ai.com`; the index4ai MCP sets `https://console.index4.ai`. |
 | `GRILL_TRUSTED_ORIGINS` | Browser clients only | Comma-separated origins (`scheme://host[:port]`) allowed to make cross-origin state-changing requests. See below. |
 
 **Cross-origin protection**
@@ -300,6 +307,7 @@ A direct upload endpoint that bypasses MCP message-size limits. Same auth as MCP
 
 - **Raw body:** send file bytes as the request body (`application/octet-stream` or any non-multipart type). Pass basename via query `?filename=report.pdf` or header `X-Filename`.
 - **Multipart:** `Content-Type: multipart/form-data` with a part named **`file`**.
+- **Metadata (optional):** `X-Attributes` (JSON object) and `X-Attribute-Schema`, validated like the tools' `attributes` / `attribute_schema`. A legacy `X-Labels` header (`key:value` items, comma-joined) is translated into the `labels` attribute and merged after any `labels` in `X-Attributes`; only `X-Attributes` is sent upstream. Invalid metadata is a `400` `invalid_input`.
 
 Response `201` with JSON `{"job_id":"…"}`. Size limits follow **`GRILL_INGEST_MAX_BYTES`** (see above).
 

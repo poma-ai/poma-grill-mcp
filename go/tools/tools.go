@@ -14,6 +14,7 @@ func Register(server *mcp.Server) {
 	mcp.AddTool(server, grillJobsStatusTool, GrillJobsStatus)
 	mcp.AddTool(server, grillSearchTool, GrillSearch)
 	mcp.AddTool(server, grillDocsListTool, GrillDocsList)
+	mcp.AddTool(server, grillAttributesTool, GrillAttributes)
 	mcp.AddTool(server, grillProjectsTool, GrillProjects)
 	// TODO: enable once poma-cli implements the underlying client methods
 	// mcp.AddTool(server, grillDocsDeleteTool, GrillDocsDelete)

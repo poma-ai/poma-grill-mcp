@@ -41,7 +41,7 @@ For desktop hosts that support [MCP Bundles](https://github.com/modelcontextprot
    (or download it from a release).
 2. Open the `.mcpb` in your host (drag into Claude Desktop's **Settings → Extensions**).
 3. The host shows a config form — paste your **POMA API Key** into the (masked) field and enable.
-   The bundle targets the production API (`https://api.poma-ai.com`); to point at a different
+   The bundle targets the production API (`https://api.index4.ai`); to point at a different
    environment, run the server directly with `POMA_API_BASE_URL` set (see Environment variables).
 
 The host stores the API key in your OS keychain and passes it to the server as `POMA_API_KEY`
@@ -105,7 +105,7 @@ Once configured, ask the agent something like:
 
 > "Ingest `~/docs/report.pdf` with POMA Grill, then search it for 'coverage limits'"
 
-For large files, pass `file_path` rather than `file_base64` so the server reads bytes from disk instead of embedding them in JSON. To ingest web content, pass `url` instead — the POMA Grill server fetches and ingests it (the MCP does not download it). All three inputs are mutually exclusive; `grill_ingest` / `grill_ingest_sync` also accept optional `{key: value}` `labels`.
+For large files, pass `file_path` rather than `file_base64` so the server reads bytes from disk instead of embedding them in JSON. To ingest web content, pass `url` instead — the POMA Grill server fetches and ingests it (the MCP does not download it). All three inputs are mutually exclusive; `grill_ingest`, `grill_ingest_sync` and `grill_ingest_batch` accept typed `attributes` (plus `attribute_schema` for types the value cannot express, only for names present in `attributes`) — call `grill_attributes` first and reuse existing names. `grill_ingest` / `grill_ingest_sync` also accept legacy `{key: value}` `labels`, which are being retired in favour of attributes: they are sent as the `labels` attribute (`"key:value"` strings in `attributes.labels`, after any you pass there; no `X-Labels` header). Grill types it `[]encrypted_text` (token-matched) unless the project already owns `labels` with another type, which then governs; labels share the attribute limits (64 elements, 64 names, 2048 characters).
 
 ## Modes
 
@@ -116,16 +116,20 @@ For large files, pass `file_path` rather than `file_base64` so the server reads 
 
 ## Tools
 
-Six tools, matching the Go implementation:
+Ten tools, matching the Go implementation:
 
 | Tool | What it does |
 |------|--------------|
+| `grill_explain` | How Grill works, and how to get an API key. No auth. |
 | `grill_ingest` | Upload a file; returns `job_id` immediately (does not wait for indexing). |
 | `grill_ingest_sync` | Upload and wait until terminal status; returns `job_id` + `events`. |
 | `grill_ingest_resume` | Reconnect to an in-progress job's status stream and wait until terminal. |
 | `grill_ingest_batch` | Upload up to 50 files with concurrency control (default 5, max 10). |
 | `grill_jobs_status` | Snapshot status for up to 50 jobs in one call. Each result carries `grill?` on a dedup or replacement outcome. |
 | `grill_search` | Hybrid search returning concatenated context for RAG. `doc_filter` (= `job_id`, or `grill.doc_id` on a dedup hit) restricts to one doc. |
+| `grill_attributes` | Typed attribute names already declared in the project, with their types and `max_names`. Call before passing `attributes` to an ingest tool (reuse an existing name and type; names are permanent) and before building `grill_search` `attribute_filters`. |
+| `grill_docs_list` | Documents in the project, with ids and metadata. |
+| `grill_projects` | Projects reachable by the credential, and the default. |
 
 See the top-level [README](https://github.com/poma-ai/poma-grill-mcp#tools) for full argument tables.
 
@@ -136,8 +140,8 @@ All read at runtime — nothing is baked in at build/publish time.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `POMA_API_KEY` | (unset) | API token. Fallback when a tool call doesn't pass an explicit `token`. Without it, every tool returns `"token is required …"`. |
-| `POMA_API_BASE_URL` | `https://api.poma-ai.com` | Override the API host. Auto-appends `/v3` unless the URL already ends in `/vN`. |
-| `POMA_STATUS_API_BASE_URL` | `https://api.poma-ai.com/status/v1` (or `${POMA_API_BASE_URL}/status/v1`) | Override the SSE status-stream host. Same versioning rule. |
+| `POMA_API_BASE_URL` | `https://api.index4.ai` | Override the API host. Only the origin is used: requests always go to `<origin>/index4ai/v1`, so a legacy `/v3` suffix is ignored. |
+| `POMA_STATUS_API_BASE_URL` | `https://api.index4.ai/status/v1` (or the `POMA_API_BASE_URL` origin + `/status/v1`) | Override the SSE status-stream URL. `/status/v1` is appended unless the value already ends in `/vN`. |
 | `GRILL_INGEST_ALLOWED_PREFIX` | (unset = no restriction) | Security guard for `file_path`. When set, ingest rejects any path that doesn't resolve (after symlink evaluation) under this directory. |
 | `GRILL_INGEST_MAX_BYTES` | `536870912` (512 MiB) | Max upload size in bytes. `0` = unlimited. Applied to both `file_path` and `file_base64`. |
 

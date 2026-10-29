@@ -95,11 +95,12 @@ endpoint, ingest remote documents by `url` or small ones by `file_base64` instea
 | `grill_jobs_status` | Status snapshots for up to 50 jobs. |
 | `grill_search` | Hybrid search returning concatenated RAG context. |
 | `grill_docs_list` | Documents in the project, with ids and labels. |
+| `grill_attributes` | Typed attribute names and types already declared in the project; call before passing `attributes` to an ingest tool, and reuse a listed name where one fits. |
 | `grill_projects` | Projects reachable by the credential, and the default. |
 
 ## Versioning
 
-`plugin.json` tracks the MCP server version it documents (currently `0.5.0`). When the
+`plugin.json` tracks the MCP server version it documents (currently `0.7.0`). When the
 tool surface in [`schemas/tools.json`](../../schemas/tools.json) changes, update the
 skills and bump `version` here.
 
