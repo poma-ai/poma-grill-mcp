@@ -10,26 +10,22 @@ Sign up at [console.poma-ai.com](https://console.poma-ai.com) and copy your API 
 
 ## 2. Install
 
-**Homebrew (macOS/Linux)**
+**`go install`** (Go 1.25+)
 ```bash
-brew tap poma-ai/poma-grill-mcp
-brew install poma
+go install github.com/poma-ai/poma-grill-mcp/go/cmd/poma-grill-mcp@latest
 which poma-grill-mcp   # note the full path for step 3
 ```
-
-**`go install`**
-```bash
-go install github.com/poma-ai/poma-grill-mcp@latest
-which poma-grill-mcp
-```
+`@latest` resolves against the `go/vX.Y.Z` tags the release workflow pushes. Until the first Go release exists it installs the default branch head; pin a commit with `@<sha>` if you need reproducibility.
 
 **From source**
 ```bash
 git clone https://github.com/poma-ai/poma-grill-mcp
 cd poma-grill-mcp/go
-go build -o bin/poma-grill-mcp .
+go build -o bin/poma-grill-mcp ./cmd/poma-grill-mcp
 realpath bin/poma-grill-mcp   # note the full path for step 3
 ```
+
+**Homebrew** — not available yet. The tap `poma-ai/homebrew-poma-grill-mcp` is filled by GoReleaser on the first Go release (formula `poma-grill-mcp`); until then `brew tap poma-ai/poma-grill-mcp` clones an empty repository. The `poma` CLI in `poma-ai/poma` is a different program.
 
 ## 3. Add to your agent
 

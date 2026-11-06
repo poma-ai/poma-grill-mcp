@@ -1,4 +1,4 @@
-module github.com/poma-ai/poma-grill-mcp
+module github.com/poma-ai/poma-grill-mcp/go
 
 go 1.25.0
 
