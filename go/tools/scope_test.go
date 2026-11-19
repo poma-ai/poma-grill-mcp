@@ -1,6 +1,9 @@
 package tools
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -195,5 +198,146 @@ func TestScopeFromProjectsNilDegrades(t *testing.T) {
 	}
 	if got.Hint == "" {
 		t.Error("Hint should never be empty even without projects")
+	}
+}
+
+// An orga's default grill project carries the OWNER's account_id and
+// is_default=true, but its documents live in "proj_<id>", never in the owner's
+// personal "account_<id>" namespace. Only is_default with no orga_id is the
+// account default. The orga default is listed first on purpose: first-match
+// lookups must not pick it.
+var orgaDefaultFixture = []grillProject{
+	{ID: "0a0a0a0a", ProjectID: "0a0a0a0a", AccountID: "14d12545", OrgaID: "4adc2778", Name: "Default Index", Product: "grill", IsDefault: true},
+	{ID: "0d6d50d7", ProjectID: "0d6d50d7", AccountID: "14d12545", Name: "Default Workspace", Product: "grill", IsDefault: true},
+}
+
+func TestScopeFromProjectsOrgaDefault(t *testing.T) {
+	const acctSrc = "account default (no project_id set)"
+	tests := []struct {
+		name          string
+		projects      []grillProject
+		projectID     string
+		namespace     string
+		source        string
+		wantName      string
+		wantProjectID string
+		wantIsDefault bool
+		wantNamespace string
+		hintHas       string
+		hintNot       string
+	}{
+		{
+			name:          "account credential without project resolves account default",
+			projects:      orgaDefaultFixture,
+			source:        acctSrc,
+			wantName:      "Default Workspace",
+			wantProjectID: "0d6d50d7",
+			wantIsDefault: true,
+			wantNamespace: "account_14d12545",
+			hintHas:       "default grill workspace",
+		},
+		{
+			name:          "account_ namespace maps to account default, never the orga default",
+			projects:      orgaDefaultFixture,
+			namespace:     "account_14d12545",
+			source:        acctSrc,
+			wantName:      "Default Workspace",
+			wantProjectID: "0d6d50d7",
+			wantIsDefault: true,
+			wantNamespace: "account_14d12545",
+			hintHas:       "default grill workspace",
+		},
+		{
+			name:          "account_ namespace with only the orga default listed stays unresolved",
+			projects:      orgaDefaultFixture[:1],
+			namespace:     "account_14d12545",
+			source:        acctSrc,
+			wantNamespace: "account_14d12545",
+			hintHas:       "default grill workspace",
+		},
+		{
+			name:          "project key bound to the orga default uses proj_ namespace",
+			projects:      orgaDefaultFixture[:1],
+			source:        sourceProjectKey,
+			wantName:      "Default Index",
+			wantProjectID: "0a0a0a0a",
+			wantIsDefault: false,
+			wantNamespace: "proj_0a0a0a0a",
+			hintHas:       "project API key",
+			hintNot:       "default grill workspace",
+		},
+		{
+			name:          "explicit project_id of the orga default uses proj_ namespace",
+			projects:      orgaDefaultFixture,
+			projectID:     "0a0a0a0a",
+			source:        "project_id argument",
+			wantName:      "Default Index",
+			wantProjectID: "0a0a0a0a",
+			wantIsDefault: false,
+			wantNamespace: "proj_0a0a0a0a",
+			hintHas:       `"Default Index"`,
+			hintNot:       "default grill workspace",
+		},
+		{
+			name:          "proj_ namespace of the orga default is not the account default",
+			projects:      orgaDefaultFixture,
+			namespace:     "proj_0a0a0a0a",
+			source:        "project_id argument",
+			wantName:      "Default Index",
+			wantProjectID: "0a0a0a0a",
+			wantIsDefault: false,
+			wantNamespace: "proj_0a0a0a0a",
+			hintNot:       "default grill workspace",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scopeFromProjects(tt.projects, tt.projectID, tt.namespace, tt.source)
+			if got.ProjectName != tt.wantName || got.ProjectID != tt.wantProjectID || got.IsDefault != tt.wantIsDefault || got.Namespace != tt.wantNamespace {
+				t.Errorf("got name=%q id=%q default=%v ns=%q; want name=%q id=%q default=%v ns=%q",
+					got.ProjectName, got.ProjectID, got.IsDefault, got.Namespace, tt.wantName, tt.wantProjectID, tt.wantIsDefault, tt.wantNamespace)
+			}
+			if tt.hintHas != "" && !strings.Contains(got.Hint, tt.hintHas) {
+				t.Errorf("hint %q lacks %q", got.Hint, tt.hintHas)
+			}
+			if tt.hintNot != "" && strings.Contains(got.Hint, tt.hintNot) {
+				t.Errorf("hint %q must not contain %q", got.Hint, tt.hintNot)
+			}
+		})
+	}
+}
+
+// The listing is decoded from the real wire format: orga_id must populate
+// OrgaID, and grill_projects must not call the orga default the account default.
+func TestGrillProjectsOrgaDefaultListing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"id":"0a0a0a0a","project_id":"0a0a0a0a","account_id":"14d12545","orga_id":"4adc2778","name":"Default Index","product":"grill","protected":false,"is_default":true},
+			{"id":"0d6d50d7","project_id":"0d6d50d7","account_id":"14d12545","name":"Default Workspace","product":"grill","protected":false,"is_default":true}
+		]`))
+	}))
+	defer srv.Close()
+	t.Setenv("POMA_API_BASE_URL", srv.URL)
+
+	_, out, err := GrillProjects(context.Background(), nil, GrillProjectsInput{Token: "poma_acc_orgadefault"})
+	if err != nil || out.Code != "" {
+		t.Fatalf("err=%v out=%+v", err, out)
+	}
+	for _, line := range strings.Split(out.Projects, "\n") {
+		switch {
+		case strings.Contains(line, "Default Index"):
+			if !strings.Contains(line, "default: false") || !strings.Contains(line, "org: 4adc2778") {
+				t.Errorf("orga default line = %q", line)
+			}
+		case strings.Contains(line, "Default Workspace"):
+			if !strings.Contains(line, "default: true") {
+				t.Errorf("account default line = %q", line)
+			}
+		}
+	}
+
+	projects, perr := parseProjects([]byte(`[{"id":"0a0a0a0a","project_id":"0a0a0a0a","account_id":"14d12545","orga_id":"4adc2778","name":"Default Index","product":"grill","is_default":true}]`))
+	if perr != nil || len(projects) != 1 || projects[0].OrgaID != "4adc2778" {
+		t.Fatalf("orga_id not decoded: %v %+v", perr, projects)
 	}
 }
