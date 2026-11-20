@@ -66,6 +66,15 @@ export function parseProjects(body: Uint8Array): GrillProject[] | null {
   }));
 }
 
+/**
+ * True for an ACCOUNT's default project (documents in "account_<account_id>").
+ * An orga's default project carries the orga owner's account_id with orga_id
+ * set; its documents live in "proj_<project_id>".
+ */
+export function isAccountDefault(p: GrillProject): boolean {
+  return p.is_default && p.orga_id === "";
+}
+
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
@@ -202,7 +211,7 @@ export function scopeFromProjects(
     // too, in case the wire format changes.
     if (namespace.startsWith("account_")) {
       const acct = namespace.slice("account_".length);
-      p = find((x) => x.product === "grill" && x.is_default && x.account_id === acct);
+      p = find((x) => x.product === "grill" && isAccountDefault(x) && x.account_id === acct);
     } else {
       const id = namespace.startsWith("proj_") ? namespace.slice("proj_".length) : namespace;
       p = find((x) => x.project_id === id || x.id === id);
@@ -217,15 +226,15 @@ export function scopeFromProjects(
   } else {
     // Account default: the key owner's default grill workspace (own account, not
     // an org's) — identified by is_default with no orga.
-    p = find((x) => x.product === "grill" && x.is_default && x.orga_id === "");
+    p = find((x) => x.product === "grill" && isAccountDefault(x));
   }
 
   if (p) {
     scope.project_name = p.name;
     scope.project_id = p.project_id;
-    scope.is_default = p.is_default;
+    scope.is_default = isAccountDefault(p);
     if (!scope.namespace || scope.namespace === "") {
-      scope.namespace = p.is_default ? `account_${p.account_id}` : `proj_${p.project_id}`;
+      scope.namespace = isAccountDefault(p) ? `account_${p.account_id}` : `proj_${p.project_id}`;
     }
   }
 

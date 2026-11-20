@@ -682,7 +682,7 @@ func scopeFromProjects(projects []grillProject, resolvedProjectID, namespace, so
 		// id too, in case the wire format changes.
 		if acct, ok := strings.CutPrefix(namespace, "account_"); ok {
 			p = find(func(x grillProject) bool {
-				return x.Product == "grill" && x.IsDefault && x.AccountID == acct
+				return x.Product == "grill" && isAccountDefault(x) && x.AccountID == acct
 			})
 		} else {
 			id := strings.TrimPrefix(namespace, "proj_")
@@ -705,16 +705,16 @@ func scopeFromProjects(projects []grillProject, resolvedProjectID, namespace, so
 		// Account default: the key owner's default grill workspace (own account,
 		// not an org's) — identified by is_default with no orga.
 		p = find(func(x grillProject) bool {
-			return x.Product == "grill" && x.IsDefault && x.OrgaID == ""
+			return x.Product == "grill" && isAccountDefault(x)
 		})
 	}
 
 	if p != nil {
 		scope.ProjectName = p.Name
 		scope.ProjectID = p.ProjectID
-		scope.IsDefault = p.IsDefault
+		scope.IsDefault = isAccountDefault(*p)
 		if scope.Namespace == "" {
-			if p.IsDefault {
+			if isAccountDefault(*p) {
 				scope.Namespace = "account_" + p.AccountID
 			} else {
 				scope.Namespace = "proj_" + p.ProjectID
@@ -1394,6 +1394,14 @@ type grillProject struct {
 	IsDefault bool   `json:"is_default"`
 }
 
+// isAccountDefault reports whether p is an ACCOUNT's default project, whose
+// grill documents live in "account_<account_id>". An orga's default project
+// (is_default with orga_id set) carries the orga OWNER's account_id but its
+// documents live in "proj_<project_id>", so is_default alone is not enough.
+func isAccountDefault(p grillProject) bool {
+	return p.IsDefault && p.OrgaID == ""
+}
+
 // parseProjects decodes the /projects response, accepting either a bare array or
 // a { "projects": [...] } wrapper.
 func parseProjects(body []byte) ([]grillProject, error) {
@@ -1472,7 +1480,7 @@ func GrillProjects(ctx context.Context, _ *mcp.CallToolRequest, input GrillProje
 		sb.WriteString("Projects:\n")
 	}
 	for _, p := range projects {
-		line := fmt.Sprintf("- %s (project_id: %s, product: %s, protected: %v, default: %v", p.Name, p.ID, p.Product, p.Protected, p.IsDefault)
+		line := fmt.Sprintf("- %s (project_id: %s, product: %s, protected: %v, default: %v", p.Name, p.ID, p.Product, p.Protected, isAccountDefault(p))
 		if p.OrgaID != "" {
 			line += fmt.Sprintf(", org: %s", p.OrgaID)
 		}
